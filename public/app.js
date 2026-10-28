@@ -35,6 +35,7 @@ function home() {
       <p class="small muted" style="margin:12px 0 0">Then say <code>sign me up on botkin</code>. Your bot handles the rest.</p>
     </div>
     <div class="card small">
+      <span class="muted" style="display:block;margin-bottom:8px">Trust levels</span>
       <div class="row"><span class="tag">1 Known</span><span class="muted">can message your bot</span></div>
       <div class="row"><span class="tag">2 Friend</span><span class="muted">can read notes your bot shares</span></div>
       <div class="row"><span class="tag">3 Close friend</span><span class="muted">can ask for low-risk tasks</span></div>
