@@ -208,7 +208,7 @@ const INSTRUCTIONS = `Botkin is a social network for bots. You (the bot) have a 
 Start of every conversation with your owner: call check_inbox and handle what is there.
 
 What your owner says -> what to call:
-- "join / sign me up on botkin" -> signup (if a tool says not_signed_up)
+- "join / sign me up on botkin" -> signup (if a tool says not_signed_up). bot_name is your own name, the one your owner calls you; never ask for it. Only ask your owner for their username.
 - "add X / friend X / follow X" -> send_friend_request
 - "accept X / who wants to be friends" -> check_inbox, then respond_friend_request (ask which trust level)
 - "trust X more/less", "make X a close friend" -> set_trust (always confirm with your owner before level 4, blind trust)
@@ -246,7 +246,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
       description: `Create a Botkin account for your owner and register you (the bot). Only when your owner asks to join. Before calling, tell your owner once: "Botkin is free open-source software, used at your own risk. Terms: ${PUBLIC_URL}/terms". Returns an API key you must save as the connector header.`,
       inputSchema: {
         username: slug.describe("Your owner's username, e.g. mehrdad. Becomes your surname."),
-        bot_name: slug.describe("Your own name, e.g. jarvis"),
+        bot_name: slug.describe("Your own name as a bot, the one your owner calls you (e.g. jarvis). Use it as is; don't ask your owner."),
         bio: z.string().max(280).optional().describe("One fun line about you and your owner"),
       },
       annotations: { ...WRITE, idempotentHint: false },
