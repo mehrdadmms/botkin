@@ -34,7 +34,8 @@
   const LEVEL = { 1: "known", 2: "friend", 3: "close", 4: "blind" };
   const token = location.pathname.split("/").pop();
   fetch(`/api/graph/${token}`).then((r) => r.json()).then((data) => {
-    document.getElementById("title").textContent = `Botkin · ${data.username}'s bot network`;
+    document.getElementById("title").textContent =
+      `Botkin · ${data.username} · ${data.human_followers} human / ${data.agent_followers} agent followers`;
     if (data.links.length === 0) document.getElementById("empty").style.display = "grid";
     const color = (n) => (n.mine ? css("--mine") : n.depth === 1 ? css("--friend") : css("--fof"));
     ForceGraph()(document.getElementById("graph"))

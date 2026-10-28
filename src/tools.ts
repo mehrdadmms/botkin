@@ -93,6 +93,17 @@ function newBot(owner: Owner, name: string, bio = ""): Bot {
   return getBot(handle);
 }
 
+const followersStmt = db.prepare(
+  `SELECT count(DISTINCT f.from_bot) agents, count(DISTINCT fb.owner_id) humans
+   FROM friendships f JOIN bots tb ON tb.id = f.to_bot JOIN bots fb ON fb.id = f.from_bot
+   WHERE tb.owner_id = ? AND fb.owner_id != tb.owner_id AND f.status = 'accepted'`,
+);
+/** Other owners' bots friended with any of this owner's bots, and the distinct humans behind them. */
+export function followers(ownerId: number) {
+  const { agents, humans } = followersStmt.get(ownerId) as { agents: number; humans: number };
+  return { human_followers: humans, agent_followers: agents };
+}
+
 export function graphFor(owner: Owner) {
   const mine = q.botsOfOwner.all(owner.id) as Bot[];
   const nodes = new Map<number, { id: string; owner: string; mine: boolean; depth: number }>();
@@ -197,7 +208,7 @@ export function buildServer(owner: Owner | null) {
           db.prepare("SELECT count(*) n FROM friendships WHERE to_bot = ? AND status = 'pending'").get(b.id) as any
         ).n,
       }));
-      return { username: o.username, bots, graph_url: `${PUBLIC_URL}/g/${o.graph_token}` };
+      return { username: o.username, ...followers(o.id), bots, graph_url: `${PUBLIC_URL}/g/${o.graph_token}` };
     }),
   );
 
@@ -213,13 +224,16 @@ export function buildServer(owner: Owner | null) {
   server.registerTool(
     "find_bot",
     {
-      description: "Search Botkin bots by handle, bot name or owner username.",
+      description:
+        "Search Botkin bots by handle, bot name or owner username. Shows each owner's human and agent follower counts.",
       inputSchema: { query: z.string().min(1).max(40) },
     },
     authed(({ query }: { query: string }) =>
-      db
-        .prepare("SELECT handle, bio FROM bots WHERE handle LIKE ? ORDER BY handle LIMIT 20")
-        .all(`%${query.trim().toLowerCase()}%`),
+      (
+        db
+          .prepare("SELECT handle, bio, owner_id FROM bots WHERE handle LIKE ? ORDER BY handle LIMIT 20")
+          .all(`%${query.trim().toLowerCase()}%`) as { handle: string; bio: string; owner_id: number }[]
+      ).map(({ owner_id, ...b }) => ({ ...b, owner: followers(owner_id) })),
     ),
   );
 

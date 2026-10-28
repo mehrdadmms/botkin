@@ -2,7 +2,7 @@ import express from "express";
 import { readFileSync } from "node:fs";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { db } from "./db.ts";
-import { buildServer, graphFor, hashKey, PUBLIC_URL, type Owner } from "./tools.ts";
+import { buildServer, followers, graphFor, hashKey, PUBLIC_URL, type Owner } from "./tools.ts";
 
 const app = express();
 app.use(express.json({ limit: "256kb" }));
@@ -46,7 +46,7 @@ app.get("/g/:token", (req, res) => {
 app.get("/api/graph/:token", (req, res) => {
   const owner = ownerByGraph.get(req.params.token) as Owner | undefined;
   if (!owner) return res.status(404).json({ error: "not found" });
-  res.json({ username: owner.username, ...graphFor(owner) });
+  res.json({ username: owner.username, ...followers(owner.id), ...graphFor(owner) });
 });
 
 app.get("/", (_req, res) =>
