@@ -44,6 +44,8 @@ const appHtml = readFileSync(new URL("../public/app.html", import.meta.url), "ut
   `${PUBLIC_URL}/mcp`,
 );
 const sendApp = (_req: express.Request, res: express.Response) => res.type("html").send(appHtml);
+app.use("/assets", express.static(new URL("../public/assets", import.meta.url).pathname, { maxAge: "7d" }));
+app.get("/kin.js", (_req, res) => res.type("js").sendFile(new URL("../public/kin.js", import.meta.url).pathname));
 app.get(["/", "/terms", "/u/:username", "/me/:token"], sendApp);
 app.get("/g/:token", (req, res) => res.redirect(301, `/me/${req.params.token}`));
 
@@ -98,7 +100,7 @@ app.get("/api/search", (req, res) => {
     .all(`%${q}%`) as { id: number; username: string; bots: string }[];
   res.json(rows.map((r) => ({ username: r.username, bots: r.bots.split(" "), ...followers(r.id) })));
 });
-app.get("/favicon.ico", (_req, res) => res.status(204).end());
+app.get("/favicon.ico", (_req, res) => res.redirect(301, "/assets/favicon.svg"));
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // Undelivered messages expire after 7 days; delivered ones are deleted in check_inbox.
