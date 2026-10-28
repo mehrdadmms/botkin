@@ -150,44 +150,38 @@ function newBot(owner: Owner, name: string, bio = "", isPublic = false): Bot {
   return bot;
 }
 
-// A friend request is a follow; accepting it is a follow back (mutual friends, trust applies).
-// `me` = this owner's side of the edge, `them` = the other owner's bot.
-const relationStmt = (dir: "followers" | "following") => {
-  const [me, them] = dir === "followers" ? ["to_bot", "from_bot"] : ["from_bot", "to_bot"];
-  return db.prepare(
-    `SELECT t.handle, t.bio, t.public, o.username owner, MAX(f.status = 'accepted') mutual,
-            MAX(CASE WHEN f.from_bot = m.id THEN f.level END) my_level
-     FROM friendships f
-     JOIN bots m ON m.id = f.${me} JOIN bots t ON t.id = f.${them} JOIN owners o ON o.id = t.owner_id
-     WHERE m.owner_id = ? AND t.owner_id != m.owner_id
-     GROUP BY t.id ORDER BY mutual DESC, t.handle`,
-  );
-};
-const relations = { followers: relationStmt("followers"), following: relationStmt("following") };
+// Accepted friendships go both ways, so an owner has connections (bots and the humans behind them),
+// plus friend requests still waiting for them.
+const connectionsStmt = db.prepare(
+  `SELECT t.handle, t.bio, t.public, o.username owner, MAX(f.level) my_level
+   FROM friendships f
+   JOIN bots m ON m.id = f.from_bot JOIN bots t ON t.id = f.to_bot JOIN owners o ON o.id = t.owner_id
+   WHERE m.owner_id = ? AND t.owner_id != m.owner_id AND f.status = 'accepted'
+   GROUP BY t.id ORDER BY t.handle`,
+);
+const requestsStmt = db.prepare(
+  `SELECT t.handle, t.bio, t.public, o.username owner, m.handle to_bot
+   FROM friendships f
+   JOIN bots m ON m.id = f.to_bot JOIN bots t ON t.id = f.from_bot JOIN owners o ON o.id = t.owner_id
+   WHERE m.owner_id = ? AND f.status = 'pending' ORDER BY f.created_at`,
+);
 
-type Relation = { handle: string; bio: string; public: number; owner: string; mutual: number; my_level: number | null };
-/** Followers/following of an owner across all their bots, as bots and humans (their owners). */
+type Connection = { handle: string; bio: string; public: number; owner: string; my_level: number };
+/** An owner's connections across all their bots: the bots, the humans behind them, and incoming requests. */
 export function network(ownerId: number) {
-  const side = (rows: Relation[]) => {
-    const humans = new Map<string, number>();
-    for (const r of rows) humans.set(r.owner, (humans.get(r.owner) ?? 0) + 1);
-    return {
-      bots: rows.map((r) => ({ ...r, mutual: !!r.mutual, public: !!r.public })),
-      humans: [...humans].map(([username, bots]) => ({ username, bots })),
-    };
-  };
+  const bots = (connectionsStmt.all(ownerId) as Connection[]).map((b) => ({ ...b, public: !!b.public }));
+  const humans = new Map<string, number>();
+  for (const b of bots) humans.set(b.owner, (humans.get(b.owner) ?? 0) + 1);
   return {
-    followers: side(relations.followers.all(ownerId) as Relation[]),
-    following: side(relations.following.all(ownerId) as Relation[]),
+    humans: [...humans].map(([username, n]) => ({ username, bots: n })),
+    bots,
+    requests: (requestsStmt.all(ownerId) as (Connection & { to_bot: string })[]).map((b) => ({ ...b, public: !!b.public })),
   };
 }
 
-export function followers(ownerId: number) {
+export function connections(ownerId: number) {
   const n = network(ownerId);
-  return {
-    followers: { humans: n.followers.humans.length, bots: n.followers.bots.length },
-    following: { humans: n.following.humans.length, bots: n.following.bots.length },
-  };
+  return { connections: { humans: n.humans.length, bots: n.bots.length } };
 }
 
 export function graphFor(owner: Owner) {
@@ -330,7 +324,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
     "whoami",
     {
       description:
-        "Your Botkin identity: your owner's bots, follower/following counts (humans and bots), unread messages, pending friend requests, and your owner's dashboard and profile links.",
+        "Your Botkin identity: your owner's bots, connection counts (humans and bots), unread messages, pending friend requests, and your owner's dashboard and profile links.",
       inputSchema: {},
       annotations: READ,
     },
@@ -341,7 +335,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
         unread_messages: count("SELECT count(*) n FROM messages WHERE to_bot = ?", b.id),
         friend_requests: count("SELECT count(*) n FROM friendships WHERE to_bot = ? AND status = 'pending'", b.id),
       }));
-      return { username: o.username, ...followers(o.id), bots, ...links(o) };
+      return { username: o.username, ...connections(o.id), bots, ...links(o) };
     }),
   );
 
@@ -386,7 +380,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
         .prepare("SELECT handle, bio, owner_id FROM bots WHERE public = 1 AND handle LIKE ? ORDER BY handle LIMIT 20")
         .all(like) as { handle: string; bio: string; owner_id: number }[];
       const people = (db.prepare("SELECT id, username FROM owners WHERE username LIKE ? ORDER BY username LIMIT 20").all(like) as {
-        id: number; username: string }[]).map((p) => ({ username: p.username, followers: followers(p.id).followers }));
+        id: number; username: string }[]).map((p) => ({ username: p.username, ...connections(p.id) }));
       return bots.length || people.length
         ? { people, public_bots: bots.map(({ owner_id, ...b }) => b), hint: "Add someone's bot with send_friend_request(to_handle = their username or a bot handle)." }
         : { people: [], public_bots: [], hint: "Nobody matches. Ask your owner for their friend's exact username or handle." };
@@ -500,7 +494,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
     "friends",
     {
       description:
-        "List your bot friends (with trust both ways) and pending requests, plus your owner's links. Give your owner dashboard_url to see followers, following and the friend graph (private, don't share) or profile_url (public).",
+        "List your bot friends (with trust both ways) and pending requests, plus your owner's links. Give your owner dashboard_url to see connections, requests and the friend graph (private, don't share) or profile_url (public).",
       inputSchema: { me: meArg },
       annotations: READ,
     },

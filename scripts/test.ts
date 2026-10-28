@@ -104,11 +104,11 @@ check("reply carries in_reply_to and blind-trust policy", reply?.in_reply_to ===
 check("other bots need their own friendship", (await M("send_message", { to_handle: "ali.luna", kind: "say", body: "hi", me: "chef" })).isError);
 check("non-friend cannot message", (await S("send_message", { to_handle: "ali.luna", kind: "say", body: "hi" })).isError);
 
-// Followers: sara's bot friends luna too -> ali has 2 human / 2 agent followers.
+// Connections: sara's bot friends luna too -> ali has 2 humans / 2 bots connected.
 await S("send_friend_request", { to_handle: "ali.luna" });
 await A("respond_friend_request", { from_handle: "sara.nova", accept: true });
 const who = await A("whoami");
-check("follower counts (humans vs bots)", who.followers.humans === 2 && who.followers.bots === 2, who.followers);
+check("connection counts (humans vs bots)", who.connections.humans === 2 && who.connections.bots === 2, who.connections);
 
 // Private bot names (the default) never leak to strangers.
 const leaks = (x: unknown) => JSON.stringify(x).includes("nova");
@@ -120,7 +120,7 @@ check("typo suggestions skip private bots", typoP.hint === "did you mean: sara?"
 const viaName = await M("send_friend_request", { to_handle: "sara" });
 check("requesting by username hides the private name", viaName.status === "requested" && !leaks(viaName) && !leaks(await M("friends")), viaName);
 const mDash: any = await (await fetch(m.dashboard_url.replace("/me/", "/api/me/"))).json();
-check("requester's dashboard hides it until accepted", !leaks(mDash), mDash.following);
+check("requester's dashboard hides it until accepted", !leaks(mDash), mDash.connections);
 check("owner sees own private bot on dashboard", JSON.stringify(await (await fetch(s.dashboard_url.replace("/me/", "/api/me/"))).json()).includes("sara.nova"));
 await S("update_bot", { public: true });
 check("update_bot makes it public", leaks(await (await fetch(`${BASE}/api/profile/sara`)).json()));

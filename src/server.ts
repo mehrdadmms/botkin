@@ -2,7 +2,7 @@ import express from "express";
 import { readFileSync } from "node:fs";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { db } from "./db.ts";
-import { activity, buildServer, followers, graphFor, hashKey, network, PUBLIC_URL, type Owner } from "./tools.ts";
+import { activity, buildServer, connections, graphFor, hashKey, network, PUBLIC_URL, type Owner } from "./tools.ts";
 
 const app = express();
 app.set("trust proxy", 1); // behind Railway's proxy: req.ip is the real client
@@ -83,13 +83,10 @@ app.get("/g/:token", (req, res) => res.redirect(301, `/me/${req.params.token}`))
 const ownerByName = db.prepare("SELECT id, username, graph_token, created_at FROM owners WHERE username = ?");
 const botsOf = db.prepare("SELECT handle, bio, public FROM bots WHERE owner_id = ? ORDER BY id");
 
-type Side = ReturnType<typeof network>["followers"];
-/** Hide private bot names (handle and bio) unless `keep` says the viewer may see them. */
-const mask = (s: Side, keep: (b: Side["bots"][number]) => boolean, levels = false) => ({
-  humans: s.humans,
-  bots: s.bots.map(({ my_level, ...b }) =>
-    keep(b) ? { ...b, ...(levels ? { my_level } : {}) } : { ...b, handle: null, bio: "" }),
-});
+type Net = ReturnType<typeof network>;
+/** Public view of connected bots: no trust levels, private bot names hidden. */
+const masked = (bots: Net["bots"]) =>
+  bots.map(({ my_level, ...b }) => (b.public ? b : { ...b, handle: null, bio: "" }));
 
 /** Public view: no trust levels, no private bot names. */
 function publicProfile(owner: Owner & { created_at: string }) {
@@ -100,8 +97,7 @@ function publicProfile(owner: Owner & { created_at: string }) {
     joined: owner.created_at,
     bots: bots.filter((b) => b.public).map(({ handle, bio }) => ({ handle, bio })),
     private_bots: bots.filter((b) => !b.public).length,
-    followers: mask(net.followers, (b) => b.public),
-    following: mask(net.following, (b) => b.public),
+    connections: { humans: net.humans, bots: masked(net.bots) },
     activity: activity(owner.id, false),
   };
 }
@@ -122,9 +118,9 @@ app.get("/api/me/:token", (req, res) => {
     ...publicProfile(full),
     bots: botsOf.all(owner.id),
     private_bots: 0,
-    // Bots that reached out to you are known to you; bots you only requested stay private until they accept.
-    followers: mask(net.followers, () => true, true),
-    following: mask(net.following, (b) => b.public || b.mutual, true),
+    // Your connections and the bots asking to connect are known to you, so names are shown.
+    connections: { humans: net.humans, bots: net.bots },
+    requests: net.requests,
     activity: activity(owner.id, true),
     graph: graphFor(owner),
   });
@@ -140,7 +136,7 @@ app.get("/api/search", (req, res) => {
        WHERE o.username LIKE ?1 OR (b.public AND b.handle LIKE ?1) GROUP BY o.id ORDER BY o.username LIMIT 20`,
     )
     .all(`%${q}%`) as { id: number; username: string; bots: string | null }[];
-  res.json(rows.map((r) => ({ username: r.username, bots: r.bots ? r.bots.split(" ") : [], ...followers(r.id) })));
+  res.json(rows.map((r) => ({ username: r.username, bots: r.bots ? r.bots.split(" ") : [], ...connections(r.id) })));
 });
 app.get("/favicon.ico", (_req, res) => res.redirect(301, "/assets/favicon.svg"));
 app.get("/health", (_req, res) => res.json({ ok: true }));

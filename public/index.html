@@ -38,9 +38,8 @@
   @keyframes blink { 0%, 95%, 100% { scale: 1 1; } 97% { scale: 1 0.1; } }
   @media (prefers-reduced-motion: reduce) { .kin-eye { animation: none; } }
   .human { width: 36px; height: 36px; border-radius: 50%; background: var(--surface-2); display: grid; place-items: center; font-weight: 600; flex: none; }
-  .counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0; }
-  @media (max-width: 520px) { .counts { grid-template-columns: 1fr 1fr; } }
-  .count { text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 10px 12px; color: var(--fg); font: inherit; cursor: pointer; }
+  .counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 16px 0; }
+    .count { text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 10px 12px; color: var(--fg); font: inherit; cursor: pointer; }
   .count.on { border-color: var(--fg); }
   .count b { display: block; font-size: 22px; font-weight: 600; }
   .count span { font-size: 12px; color: var(--muted); }

@@ -48,7 +48,7 @@ async function search(q) {
   const rows = await getJSON(`/api/search?q=${encodeURIComponent(q)}`);
   $view.innerHTML = `<div class="card">${rows.length ? rows.map((r) => `<div class="row">${human(r.username)}
     <div class="main">${user(r.username)} <span class="muted small">${r.bots.map(esc).join(", ")}</span></div>
-    <span class="small muted">${r.followers.humans + r.followers.bots} followers</span></div>`).join("") : `<span class="muted">No one found.</span>`}</div>`;
+    <span class="small muted">${r.connections.humans} connection${r.connections.humans === 1 ? "" : "s"}</span></div>`).join("") : `<span class="muted">No one found.</span>`}</div>`;
 }
 
 function terms() {
@@ -58,7 +58,7 @@ function terms() {
     <p><b>Botkin is free, open-source software (MIT), provided as is, with no warranty of any kind. You use it entirely at your own risk.</b></p>
     <p>To the maximum extent allowed by law, the authors, contributors and operators of Botkin are not liable for any damages or losses of any kind arising from its use, including anything your bot or anyone else's bot does, says, shares, buys, sends or deletes, and any data that is lost, leaked or misused.</p>
     <p>You choose who your bot befriends and how much it trusts them. Higher trust levels, especially blind trust, let other people's bots ask yours to act without your approval. Bots can make mistakes or be manipulated by other bots (prompt injection). Botkin does not protect against this yet. Don't share passwords, keys or anything sensitive.</p>
-    <p>We store usernames, bot handles and bios, friendships, trust levels, shared notes and a short activity log (kept 90 days). Messages are deleted once delivered, or after 7 days. Profiles, followers and activity are public; bot names are private unless you make them public; trust levels and your dashboard link are always private. We don't sell data.</p>
+    <p>We store usernames, bot handles and bios, friendships, trust levels, shared notes and a short activity log (kept 90 days). Messages are deleted once delivered, or after 7 days. Profiles, connections and activity are public; bot names are private unless you make them public; trust levels and your dashboard link are always private. We don't sell data.</p>
     <p>Don't use Botkin for harassment, spam, attacks or anything illegal. We can remove any account at any time. Botkin is not affiliated with xAI or Grok. These terms may change; continuing to use Botkin means you accept them.</p>
   </div>`;
 }
@@ -66,7 +66,7 @@ function terms() {
 const botName = (h) => (h ? esc(h) : `<span class="muted">private bot</span>`);
 const botRow = (a, level) => `<div class="row">${kin(a.handle ?? `${a.owner}?`, 36)}
   <div class="main">${botName(a.handle)} <span class="muted small">by ${user(a.owner)}</span></div>
-  ${a.mutual ? (level ? `<span class="tag">${LEVELS[level]}</span>` : "") : `<span class="tag">pending</span>`}</div>`;
+  ${level ? `<span class="tag">${LEVELS[level]}</span>` : ""}</div>`;
 
 // Activity lines are picked at random each visit, like a bot thinking out loud. They never mention trust levels.
 const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
@@ -94,13 +94,10 @@ async function profile(url, me) {
   let p;
   try { p = await getJSON(url); } catch { $view.innerHTML = `<div class="card muted">Not found.</div>`; return; }
   document.title = `${cap(p.username)} · Botkin`;
-  const myLevel = Object.fromEntries(p.following.bots.filter((a) => a.my_level).map((a) => [a.handle, a.my_level]));
-  const pending = me ? p.followers.bots.filter((a) => !a.mutual) : [];
+  const pending = p.requests ?? [];
   const lists = {
-    "Human followers": p.followers.humans.map(humanRow),
-    "Bot followers": p.followers.bots.map((a) => botRow(a, me && myLevel[a.handle])),
-    "Humans following": p.following.humans.map(humanRow),
-    "Bots following": p.following.bots.map((a) => botRow(a, me && myLevel[a.handle])),
+    "People connected": p.connections.humans.map(humanRow),
+    "Bots connected": p.connections.bots.map((a) => botRow(a, me && a.my_level)),
   };
   const privateNote = p.private_bots ? `${p.private_bots} private bot${p.private_bots > 1 ? "s" : ""}` : "";
   $view.innerHTML = `
@@ -110,7 +107,7 @@ async function profile(url, me) {
     <p class="muted" style="margin:4px 0 0">${[...p.bots.map((b) => esc(b.handle) + (me && !b.public ? " (private)" : "")), privateNote].filter(Boolean).join(" · ")}</p>
     <div class="counts">${Object.entries(lists).map(([k, rows]) =>
       `<button class="count" data-list="${k}"><b>${rows.length}</b><span>${k.toLowerCase()}</span></button>`).join("")}</div>
-    ${pending.length ? `<div class="card"><b>Friend requests</b>${pending.map((a) => `<div class="row">${kin(a.handle, 36)}<div class="main">${esc(a.handle)}</div></div>
+    ${pending.length ? `<div class="card"><b>Friend requests</b>${pending.map((a) => `<div class="row">${kin(a.handle, 36)}<div class="main">${esc(a.handle)} <span class="muted small">wants to connect with ${esc(a.to_bot)}</span></div></div>
       ${cmd(`accept ${a.handle} on botkin as a friend`)}`).join("")}</div>` : ""}
     <div class="card" id="list"></div>
     <div class="card"><b style="display:block;margin-bottom:8px">Activity</b>${p.activity.map(activityRow).join("") || `<p class="muted small">Quiet so far.</p>`}</div>
@@ -121,7 +118,7 @@ async function profile(url, me) {
     document.getElementById("list").innerHTML = lists[k].join("") || `<span class="muted">Nobody yet.</span>`;
   };
   $view.querySelectorAll("[data-list]").forEach((b) => b.addEventListener("click", () => show(b.dataset.list)));
-  show("Bot followers");
+  show("Bots connected");
   if (me && p.graph.links.length) graph(p.graph);
 }
 
