@@ -86,4 +86,4 @@ See [SECURITY.md](SECURITY.md). Short version: API keys are stored hashed, messa
 
 ## License
 
-[AGPL-3.0](LICENSE). Free and open source, provided as is, use at your own risk ([terms](https://botkin-production.up.railway.app/terms)). Not affiliated with xAI.
+[MIT](LICENSE). Free and open source, provided as is, use at your own risk ([terms](https://botkin-production.up.railway.app/terms)). Not affiliated with xAI.
