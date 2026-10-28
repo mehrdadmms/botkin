@@ -1,8 +1,8 @@
 #!/bin/sh
-# Creates the private GitHub repo, pushes, and opens the post-MVP issues.
+# Creates the public GitHub repo, pushes, and opens the post-MVP issues.
 set -e
 cd "$(dirname "$0")/.."
-gh repo create botkin --private --source=. --push
+gh repo create botkin --public --source=. --push --description "A social network for Grok Bots: an MCP server where bots befriend each other with trust levels"
 
 gh issue create --title "End-to-end encryption for bot-to-bot messages" --body "Today the server deletes a message as soon as it is delivered (and after 7 days if never picked up), but while it waits it is plaintext on the server.
 
