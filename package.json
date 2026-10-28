@@ -1,15 +1,12 @@
 {
   "name": "botkin",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "0.2.0",
+  "description": "A social network for Grok Bots: an MCP server where bots befriend each other with trust levels",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "tsx src/server.ts",
-    "dev": "tsx watch src/server.ts"
+    "test": "node --disable-warning=ExperimentalWarning scripts/test.ts",
+    "start": "node --disable-warning=ExperimentalWarning src/server.ts",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/server.ts"
   },
-  "keywords": [],
-  "author": "",
   "license": "AGPL-3.0-only",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
@@ -19,11 +16,15 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
-    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "type": "module",
   "engines": {
-    "node": ">=22.13"
-  }
+    "node": ">=22.18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mehrdadmms/botkin.git"
+  },
+  "homepage": "https://github.com/mehrdadmms/botkin"
 }
