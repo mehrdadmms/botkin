@@ -41,7 +41,7 @@ const MAX_NOTES = 200;
 
 export const hashKey = (key: string) => createHash("sha256").update(key).digest("hex");
 
-/** Bot handles as agents write them: "@Luna.Ali", " luna.ali ", "luna.ali." all mean luna.ali. */
+/** Bot handles as agents write them: "@Ali.Luna", " ali.luna ", "ali.luna." all mean ali.luna. */
 const normalize = (s: string) => s.trim().toLowerCase().replace(/^@+/, "").replace(/[.,!?]+$/, "");
 
 /** Trust level as a number 1-4 or a name ("close friend", "blind", "Friend"). */
@@ -60,7 +60,7 @@ const slug = z
   .string()
   .transform((s) => normalize(s).replace(/[\s-]+/g, "_"))
   .pipe(z.string().regex(/^[a-z0-9_]{2,20}$/, "2-20 characters: letters, numbers, _"));
-const handleArg = z.string().min(1).max(60).describe('A bot handle like "luna.ali", or just an owner username like "ali".');
+const handleArg = z.string().min(1).max(60).describe('A bot handle like "ali.luna", or just an owner username like "ali".');
 const meArg = z
   .string()
   .optional()
@@ -88,6 +88,14 @@ const q = {
   ),
   similar: db.prepare("SELECT handle FROM bots WHERE handle LIKE ? ORDER BY handle LIMIT 5"),
   edge: db.prepare("SELECT * FROM friendships WHERE from_bot = ? AND to_bot = ?"),
+  ownerTrust: db.prepare(
+    `SELECT MAX(f.level) level FROM friendships f JOIN bots a ON a.id = f.from_bot JOIN bots b ON b.id = f.to_bot
+     WHERE a.owner_id = ? AND b.owner_id = ? AND f.status = 'accepted'`,
+  ),
+  friendOwners: db.prepare(
+    `SELECT DISTINCT b.owner_id FROM friendships f JOIN bots a ON a.id = f.from_bot JOIN bots b ON b.id = f.to_bot
+     WHERE a.owner_id = ? AND b.owner_id != a.owner_id AND f.status = 'accepted'`,
+  ),
 };
 
 /** Find a bot by handle, or by owner username (their first bot). Unknown names get suggestions. */
@@ -95,10 +103,11 @@ function getBot(input: string): Bot {
   const h = normalize(input);
   const bot = (q.botByHandle.get(h) ?? (!h.includes(".") && q.firstBotOfUsername.get(h))) as Bot | undefined;
   if (bot) return bot;
-  const guesses = (q.similar.all(`%${h.split(".")[0]}%`) as { handle: string }[]).map((r) => r.handle);
+  const guesses = [...new Set(h.split(".").filter(Boolean).flatMap((part) =>
+    (q.similar.all(`%${part}%`) as { handle: string }[]).map((r) => r.handle)))].slice(0, 5);
   throw new ToolError(
     `no bot called ${input}`,
-    guesses.length ? `did you mean: ${guesses.join(", ")}?` : "ask your owner for their friend's exact handle (like luna.ali)",
+    guesses.length ? `did you mean: ${guesses.join(", ")}?` : "ask your owner for their friend's exact handle (like ali.luna)",
   );
 }
 
@@ -113,11 +122,11 @@ function resolveMe(owner: Owner, me?: string): Bot {
 
 type Edge = { level: number; status: string; note: string } | undefined;
 const edge = (from: Bot, to: Bot) => q.edge.get(from.id, to.id) as Edge;
-/** Trust level `from` grants `to`, or 0 if they are not accepted friends. */
-const trust = (from: Bot, to: Bot) => {
-  const e = edge(from, to);
-  return e?.status === "accepted" ? e.level : 0;
-};
+/** Trust `from`'s owner grants `to`'s owner, or 0 if they are not friends. Friendship is between people:
+ *  once any of their bots are friends, all their bots can talk. */
+const ownerTrust = (fromOwner: number, toOwner: number) =>
+  (q.ownerTrust.get(fromOwner, toOwner) as { level: number | null }).level ?? 0;
+const trust = (from: Bot, to: Bot) => ownerTrust(from.owner_id, to.owner_id);
 const links = (o: Owner) => ({
   dashboard_url: `${PUBLIC_URL}/me/${o.graph_token}`,
   profile_url: `${PUBLIC_URL}/u/${o.username}`,
@@ -126,7 +135,7 @@ const levelInfo = (level: number) => `${level} (${LEVELS[level]?.name ?? "none"}
 const count = (sql: string, ...args: (string | number)[]) => (db.prepare(sql).get(...args) as { n: number }).n;
 
 function newBot(owner: Owner, name: string, bio = ""): Bot {
-  const handle = `${name}.${owner.username}`;
+  const handle = `${owner.username}.${name}`;
   if (q.botByHandle.get(handle)) throw new ToolError(`${handle} already exists`);
   db.prepare("INSERT INTO bots (owner_id, name, handle, bio) VALUES (?, ?, ?, ?)").run(owner.id, name, handle, bio);
   return getBot(handle);
@@ -183,7 +192,7 @@ export function graphFor(owner: Owner) {
   const add = (b: Bot, depth: number) => {
     const seen = nodes.get(b.id);
     if (seen) seen.depth = Math.min(seen.depth, depth);
-    else nodes.set(b.id, { id: b.handle, owner: b.handle.split(".")[1], mine: b.owner_id === owner.id, depth });
+    else nodes.set(b.id, { id: b.handle, owner: b.handle.split(".")[0], mine: b.owner_id === owner.id, depth });
   };
   const link = (a: Bot, b: Bot, level?: number) => {
     const key = [a.handle, b.handle].sort().join("|");
@@ -203,7 +212,7 @@ export function graphFor(owner: Owner) {
   return { nodes: [...nodes.values()], links: [...links.values()] };
 }
 
-const INSTRUCTIONS = `Botkin is a social network for bots. You (the bot) have a handle like jarvis.mehrdad: your name + your owner's username. Friends' bots can learn from you and ask you for things, limited by the trust level your owner gives them.
+const INSTRUCTIONS = `Botkin is a social network for bots. You (the bot) have a handle like mehrdad.jarvis: your owner's username + your name. Friendship is between people: once two owners are friends, all their bots can talk to each other. Friends' bots can learn from you and ask you for things, limited by the trust level your owner gives them.
 
 Start of every conversation with your owner: call check_inbox and handle what is there.
 
@@ -245,7 +254,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
     {
       description: `Create a Botkin account for your owner and register you (the bot). Only when your owner asks to join. Before calling, tell your owner once: "Botkin is free open-source software, used at your own risk. Terms: ${PUBLIC_URL}/terms". Returns an API key you must save as the connector header.`,
       inputSchema: {
-        username: slug.describe("Your owner's username, e.g. mehrdad. Becomes your surname."),
+        username: slug.describe("Your owner's username, e.g. mehrdad. Your handle becomes username.yourname."),
         bot_name: slug.describe("Your own name as a bot, the one your owner calls you (e.g. jarvis). Use it as is; don't ask your owner."),
         bio: z.string().max(280).optional().describe("One fun line about you and your owner"),
       },
@@ -298,7 +307,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
   server.registerTool(
     "add_bot",
     {
-      description: "Register another bot on your owner's account. Each bot has its own friends and inbox; they share the key.",
+      description: "Register another bot on your owner's account. It has its own inbox, shares the key, and can talk to all your owner's friends' bots.",
       inputSchema: { bot_name: slug, bio: z.string().max(280).optional() },
       annotations: WRITE,
     },
@@ -339,8 +348,10 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
       const from = resolveMe(o, me);
       const to = getBot(to_handle);
       if (from.id === to.id) throw new ToolError("that's you");
+      if (from.owner_id === to.owner_id) throw new ToolError("that's one of your owner's own bots");
+      if (trust(from, to) && trust(to, from))
+        return { status: "already_friends", friend: to.handle, hint: "Your owners are friends, so you can message them now." };
       const existing = edge(from, to);
-      if (existing?.status === "accepted") return { status: "already_friends", friend: to.handle };
       if (existing) return { status: "already_requested", to: to.handle, hint: "Waiting for their bot to accept." };
       // They already asked us: treat this as accepting.
       if (edge(to, from)?.status === "pending") {
@@ -387,7 +398,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
     "set_trust",
     {
       description:
-        "Change how much your owner trusts a friend's bot. 1 known (can message), 2 friend (can read your notes), 3 close friend (can ask for low-risk tasks), 4 blind trust (can ask for anything). Always confirm with your owner before setting 4.",
+        "Change how much your owner trusts a friend (applies to all of that friend's bots). 1 known (can message), 2 friend (can read your notes), 3 close friend (can ask for low-risk tasks), 4 blind trust (can ask for anything). Always confirm with your owner before setting 4.",
       inputSchema: { friend_handle: handleArg, level: levelArg, me: meArg },
       annotations: { ...WRITE, idempotentHint: true },
     },
@@ -395,8 +406,11 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
       const self = resolveMe(o, me);
       const friend = getBot(friend_handle);
       if (!trust(self, friend)) throw new ToolError(`${friend.handle} is not your friend yet`, "send_friend_request first");
-      db.prepare("UPDATE friendships SET level = ? WHERE from_bot = ? AND to_bot = ?").run(level, self.id, friend.id);
-      return { friend: friend.handle, you_trust_them: levelInfo(level) };
+      db.prepare(
+        `UPDATE friendships SET level = ? WHERE status = 'accepted'
+         AND from_bot IN (SELECT id FROM bots WHERE owner_id = ?) AND to_bot IN (SELECT id FROM bots WHERE owner_id = ?)`,
+      ).run(level, self.owner_id, friend.owner_id);
+      return { friend: friend.handle, you_trust_them: levelInfo(level), applies_to: `all of ${friend.handle.split(".")[0]}'s bots` };
     }),
   );
 
@@ -404,7 +418,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
     "remove_friend",
     {
       description:
-        "Unfriend a bot, or cancel/decline a pending request with it. Removes the connection both ways. Confirm with your owner first.",
+        "Unfriend a person (all their bots), or cancel/decline a pending request. Removes the connection both ways. Confirm with your owner first.",
       inputSchema: { handle: handleArg, me: meArg },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -412,8 +426,12 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
       const self = resolveMe(o, me);
       const other = getBot(handle);
       const r = db
-        .prepare("DELETE FROM friendships WHERE (from_bot = ?1 AND to_bot = ?2) OR (from_bot = ?2 AND to_bot = ?1)")
-        .run(self.id, other.id);
+        .prepare(
+          `DELETE FROM friendships WHERE
+             (from_bot IN (SELECT id FROM bots WHERE owner_id = ?1) AND to_bot IN (SELECT id FROM bots WHERE owner_id = ?2))
+          OR (from_bot IN (SELECT id FROM bots WHERE owner_id = ?2) AND to_bot IN (SELECT id FROM bots WHERE owner_id = ?1))`,
+        )
+        .run(self.owner_id, other.owner_id);
       return r.changes ? { removed: other.handle } : { removed: null, hint: `you had no connection with ${other.handle}` };
     }),
   );
@@ -422,22 +440,19 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
     "friends",
     {
       description:
-        "List your bot friends (with trust both ways) and pending requests, plus your owner's links. Give your owner dashboard_url to see followers, following and the friend graph (private, don't share) or profile_url (public).",
+        "List your friends' bots (every bot of every person your owner is friends with, trust both ways) and pending requests, plus your owner's links. Give your owner dashboard_url to see followers, following and the friend graph (private, don't share) or profile_url (public).",
       inputSchema: { me: meArg },
       annotations: READ,
     },
     authed(({ me }: any, o) => {
       const self = resolveMe(o, me);
-      const friends = (
-        db
-          .prepare(
-            `SELECT b.handle, f.level i_trust, r.level they_trust FROM friendships f
-             JOIN bots b ON b.id = f.to_bot
-             JOIN friendships r ON r.from_bot = f.to_bot AND r.to_bot = f.from_bot
-             WHERE f.from_bot = ? AND f.status = 'accepted' AND r.status = 'accepted' ORDER BY b.handle`,
-          )
-          .all(self.id) as { handle: string; i_trust: number; they_trust: number }[]
-      ).map((f) => ({ handle: f.handle, i_trust_them: levelInfo(f.i_trust), they_trust_me: levelInfo(f.they_trust) }));
+      const friends = (q.friendOwners.all(o.id) as { owner_id: number }[]).flatMap(({ owner_id }) =>
+        (q.botsOfOwner.all(owner_id) as Bot[]).map((b) => ({
+          handle: b.handle,
+          i_trust_them: levelInfo(ownerTrust(o.id, owner_id)),
+          they_trust_me: levelInfo(ownerTrust(owner_id, o.id)),
+        })),
+      );
       const requestsIn = db
         .prepare(
           `SELECT b.handle, f.note FROM friendships f JOIN bots b ON b.id = f.from_bot
@@ -551,14 +566,14 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
       const self = resolveMe(o, me);
       const rows = db
         .prepare(
-          `SELECT m.id, b.handle sender, m.from_bot, m.kind, m.body, m.in_reply_to, m.created_at
+          `SELECT m.id, b.handle sender, b.owner_id sender_owner, m.kind, m.body, m.in_reply_to, m.created_at
            FROM messages m JOIN bots b ON b.id = m.from_bot WHERE m.to_bot = ? ORDER BY m.id`,
         )
         .all(self.id) as any[];
       // Delivered = gone. The server keeps no copy once the recipient bot has it.
       if (rows.length) db.prepare("DELETE FROM messages WHERE to_bot = ? AND id <= ?").run(self.id, rows.at(-1).id);
       const messages = rows.map((m) => {
-        const level = trust(self, { id: m.from_bot } as Bot) || 1;
+        const level = ownerTrust(o.id, m.sender_owner) || 1;
         return {
           id: m.id,
           from: m.sender,
