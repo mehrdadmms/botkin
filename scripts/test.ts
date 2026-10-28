@@ -11,7 +11,7 @@ const PORT = 4000 + Math.floor(Math.random() * 1000);
 const BASE = `http://localhost:${PORT}`;
 const dbPath = join(mkdtempSync(join(tmpdir(), "botkin-")), "test.db");
 const server = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server.ts"], {
-  env: { ...process.env, PORT: String(PORT), PUBLIC_URL: BASE, DB_PATH: dbPath },
+  env: { ...process.env, PORT: String(PORT), PUBLIC_URL: BASE, DB_PATH: dbPath, BOTKIN_DEV_LOGIN: "1" },
   stdio: "ignore",
 });
 process.on("exit", () => server.kill());
@@ -50,14 +50,28 @@ await waitForServer();
 const anon = await client();
 
 check("not signed up gives a clear error", (await anon("whoami")).error === "not_signed_up");
-const m = await anon("signup", { surname: "Mehrdad", bot_name: "Jarvis", bio: "ramen expert" });
-check("signup normalizes names", m.handle === "mehrdad.jarvis", m);
-check("signup returns key and links", m.api_key?.startsWith("bk_") && m.dashboard_url && m.next_steps?.length === 3, m);
-check("duplicate username refused", (await anon("signup", { surname: "mehrdad", bot_name: "x1" })).error === "surname_taken");
-check("surnames are unique regardless of case", (await anon("signup", { surname: "@MEHRDAD", bot_name: "x2" })).error === "surname_taken");
-check("bot gets a full name with username as last name", m.name === "Jarvis Mehrdad", m);
-const a = await anon("signup", { surname: "ali", bot_name: "luna", public: true });
-const s = await anon("signup", { surname: "sara", bot_name: "nova" });
+// Sign in with X, faked by the dev login: the bot starts, the owner "signs in", the bot finishes.
+async function joinWithX(xUser: string, xId: string, args: Record<string, unknown>) {
+  const start = await anon("login");
+  await fetch(`${BASE}/login/${start.code}/dev?u=${xUser}&id=${xId}`);
+  return anon("login", { code: start.code, ...args });
+}
+const start = await anon("login");
+check("login gives a link and match code", start.login_url?.endsWith(start.code) && /^[A-Z2-9]{4}$/.test(start.match_code), start);
+const loginPage = await (await fetch(start.login_url)).text();
+check("login page shows the match code", loginPage.includes(start.match_code));
+check("waiting until the owner signs in", (await anon("login", { code: start.code, bot_name: "jarvis" })).status === "waiting");
+await fetch(`${BASE}/login/${start.code}/dev?u=Mehrdad&id=111`);
+const m = await anon("login", { code: start.code, bot_name: "Jarvis", bio: "ramen expert" });
+check("X username becomes the surname", m.surname === "mehrdad" && m.handle === "mehrdad.jarvis", m);
+check("login returns key and links", m.api_key?.startsWith("bk_") && m.dashboard_url && m.next_steps?.length === 3, m);
+check("bot gets a full name with surname as last name", m.name === "Jarvis Mehrdad", m);
+check("login code works only once", (await anon("login", { code: start.code, bot_name: "jarvis" })).error === "login_expired");
+check("bad oauth state is refused", (await fetch(`${BASE}/auth/x/callback?state=nope&code=x`)).status === 400);
+const a = await joinWithX("ali", "222", { bot_name: "luna", public: true });
+const s = await joinWithX("sara", "333", { bot_name: "nova" });
+const other = await joinWithX("MEHRDAD", "999", { bot_name: "xx" });
+check("surnames stay unique when another X account has the same name", other.surname === "mehrdad_2", other);
 
 const M = await client(m.api_key), A = await client(a.api_key), S = await client(s.api_key);
 check("whoami works with key", (await M("whoami")).surname === "mehrdad");
@@ -147,6 +161,16 @@ check("public profile hides trust levels", !JSON.stringify(pub).includes("my_lev
 const priv = await fetch(m.dashboard_url.replace("/me/", "/api/me/"));
 check("dashboard api is private and uncached", priv.ok && priv.headers.get("cache-control") === "no-store");
 check("bad dashboard token is 404", (await fetch(`${BASE}/api/me/nope`)).status === 404);
+
+// Reconnect: same X account gets the same surname and bot back with a new key; the old key stops working.
+const back = await joinWithX("mehrdad", "111", { bot_name: "jarvis" });
+check("same X account recovers the surname", back.status === "welcome_back" && back.handle === "mehrdad.jarvis", back);
+check("old key stops working", (await M("whoami")).error === "not_signed_up");
+const M2 = await client(back.api_key);
+check("new key works and friends are kept", (await M2("friends")).friends?.length === 1);
+const disp = await M2("set_display_surname", { display_surname: "Rahimi" });
+check("display surname changes the full name", disp.bots?.[0] === "Jarvis Rahimi", disp);
+check("profile shows display surname", (await (await fetch(`${BASE}/api/profile/mehrdad`)).json()).display_surname === "Rahimi");
 
 console.log(failures ? `\n${failures} failed` : "\nall passed");
 process.exit(failures ? 1 : 0);

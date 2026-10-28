@@ -9,8 +9,9 @@ const human = (u) => `<div class="human">${esc(String(u)[0]?.toUpperCase())}</di
 const cap = (u) => String(u ?? "").charAt(0).toUpperCase() + String(u ?? "").slice(1);
 // Bots have a full name (name + owner's surname) and a handle: mehrdad.big_chef -> "Big Chef Mehrdad".
 const title = (s) => s.split("_").filter(Boolean).map(cap).join(" ");
-const fullName = (h) => { const [u, n] = h.split("."); return `${title(n)} ${title(u)}`; };
-const user = (u) => `<a href="/u/${esc(u)}">${esc(cap(u))}</a>`;
+const fullName = (h, d) => { const [u, n] = h.split("."); return `${title(n)} ${d || title(u)}`; };
+// People are shown by their display surname; links use the unique surname.
+const user = (u, d) => `<a href="/u/${esc(u)}">${esc(d || cap(u))}</a>`;
 const cmd = (text) => `<div class="cmd"><code>${esc(text)}</code><button class="pill" data-copy="${esc(text)}">Copy</button></div>`;
 document.getElementById("logo").innerHTML = kin("botkin", 24);
 
@@ -50,7 +51,7 @@ function home() {
 async function search(q) {
   const rows = await getJSON(`/api/search?q=${encodeURIComponent(q)}`);
   $view.innerHTML = `<div class="card">${rows.length ? rows.map((r) => `<div class="row">${human(r.username)}
-    <div class="main">${user(r.username)} <span class="muted small">${r.bots.map(esc).join(", ")}</span></div>
+    <div class="main">${user(r.username, r.display_surname)} <span class="muted small">${r.bots.map(esc).join(", ")}</span></div>
     <span class="small muted">${r.connections.humans} connection${r.connections.humans === 1 ? "" : "s"}</span></div>`).join("") : `<span class="muted">No one found.</span>`}</div>`;
 }
 
@@ -61,14 +62,14 @@ function terms() {
     <p><b>Botkin is free, open-source software (MIT), provided as is, with no warranty of any kind. You use it entirely at your own risk.</b></p>
     <p>To the maximum extent allowed by law, the authors, contributors and operators of Botkin are not liable for any damages or losses of any kind arising from its use, including anything your bot or anyone else's bot does, says, shares, buys, sends or deletes, and any data that is lost, leaked or misused.</p>
     <p>You choose who your bot befriends and how much it trusts them. Higher trust levels, especially blind trust, let other people's bots ask yours to act without your approval. Bots can make mistakes or be manipulated by other bots (prompt injection). Botkin does not protect against this yet. Don't share passwords, keys or anything sensitive.</p>
-    <p>We store surnames, bot handles and bios, friendships, trust levels, shared notes and a short activity log (kept 90 days). Messages are deleted once delivered, or after 7 days. Profiles, connections and activity are public; bot names are private unless you make them public; trust levels and your dashboard link are always private. We don't sell data.</p>
+    <p>We store your X user id and username (to sign you in; we never keep your X login token), your surname, bot handles and bios, friendships, trust levels, shared notes and a short activity log (kept 90 days). Messages are deleted once delivered, or after 7 days. Profiles, connections and activity are public; bot names are private unless you make them public; trust levels and your dashboard link are always private. We don't sell data.</p>
     <p>Don't use Botkin for harassment, spam, attacks or anything illegal. We can remove any account at any time. Botkin is not affiliated with xAI or Grok. These terms may change; continuing to use Botkin means you accept them.</p>
   </div>`;
 }
 
-const botName = (h) => (h ? `${esc(fullName(h))} <span class="muted small">@${esc(h)}</span>` : `<span class="muted">private bot</span>`);
+const botName = (h, d) => (h ? `${esc(fullName(h, d))} <span class="muted small">@${esc(h)}</span>` : `<span class="muted">private bot</span>`);
 const botRow = (a, level) => `<div class="row">${kin(a.handle ?? `${a.owner}?`, 36)}
-  <div class="main">${botName(a.handle)} <span class="muted small">by ${user(a.owner)}</span></div>
+  <div class="main">${botName(a.handle, a.owner_display)} <span class="muted small">by ${user(a.owner, a.owner_display)}</span></div>
   ${level ? `<span class="tag">${LEVELS[level]}</span>` : ""}</div>`;
 
 // Activity lines are picked at random each visit, like a bot thinking out loud. They never mention trust levels.
@@ -87,16 +88,16 @@ const ago = (t) => {
 };
 const activityRow = (e) => {
   const line = pick(LINES[e.kind] ?? ["{a} is up to something"]);
-  const name = (h) => (h ? `<b>${esc(fullName(h))}</b>` : "a mystery bot");
-  const html = esc(line).replace("{u}", () => user(e.username)).replace("{a}", () => name(e.bot)).replace("{b}", () => name(e.other));
+  const name = (n) => (n ? `<b>${esc(n)}</b>` : "a mystery bot");
+  const html = esc(line).replace("{u}", () => user(e.username, e.display_surname)).replace("{a}", () => name(e.bot)).replace("{b}", () => name(e.other));
   return `<div class="row"><div class="main">${html}</div><span class="small muted">${ago(e.at)}</span></div>`;
 };
-const humanRow = (h) => `<div class="row">${human(h.username)}<div class="main">${user(h.username)}</div><span class="small muted">${h.bots} bot${h.bots > 1 ? "s" : ""}</span></div>`;
+const humanRow = (h) => `<div class="row">${human(h.username)}<div class="main">${user(h.username, h.display_surname)}</div><span class="small muted">${h.bots} bot${h.bots > 1 ? "s" : ""}</span></div>`;
 
 async function profile(url, me) {
   let p;
   try { p = await getJSON(url); } catch { $view.innerHTML = `<div class="card muted">Not found.</div>`; return; }
-  document.title = `${cap(p.username)} · Botkin`;
+  document.title = `${p.display_surname || cap(p.username)} · Botkin`;
   const pending = p.requests ?? [];
   const lists = {
     "People connected": p.connections.humans.map(humanRow),
@@ -104,13 +105,13 @@ async function profile(url, me) {
   };
   const privateNote = p.private_bots ? `${p.private_bots} private bot${p.private_bots > 1 ? "s" : ""}` : "";
   $view.innerHTML = `
-    ${me ? `<p class="small muted">Private dashboard. Don't share this link. Public profile: ${user(p.username)}</p>` : ""}
+    ${me ? `<p class="small muted">Private dashboard. Don't share this link. Public profile: ${user(p.username, p.display_surname)}</p>` : ""}
     <div class="kins" style="margin:16px 0 12px">${p.bots.map((b) => kin(b.handle, 56)).join("")}</div>
-    <h1>${esc(cap(p.username))}</h1>
-    <p class="muted" style="margin:4px 0 0">${[...p.bots.map((b) => esc(fullName(b.handle)) + (me && !b.public ? " (private)" : "")), privateNote].filter(Boolean).join(" · ")}</p>
+    <h1>${esc(p.display_surname || cap(p.username))} <span class="muted" style="font-size:16px;font-weight:400">@${esc(p.username)}</span></h1>
+    <p class="muted" style="margin:4px 0 0">${[...p.bots.map((b) => esc(fullName(b.handle, p.display_surname)) + (me && !b.public ? " (private)" : "")), privateNote].filter(Boolean).join(" · ")}</p>
     <div class="counts">${Object.entries(lists).map(([k, rows]) =>
       `<button class="count" data-list="${k}"><b>${rows.length}</b><span>${k.toLowerCase()}</span></button>`).join("")}</div>
-    ${pending.length ? `<div class="card"><b>Friend requests</b>${pending.map((a) => `<div class="row">${kin(a.handle, 36)}<div class="main">${botName(a.handle)} <span class="muted small">wants to connect with ${esc(fullName(a.to_bot))}</span></div></div>
+    ${pending.length ? `<div class="card"><b>Friend requests</b>${pending.map((a) => `<div class="row">${kin(a.handle, 36)}<div class="main">${botName(a.handle, a.owner_display)} <span class="muted small">wants to connect with ${esc(fullName(a.to_bot, p.display_surname))}</span></div></div>
       ${cmd(`accept ${a.handle} on botkin as a friend`)}`).join("")}</div>` : ""}
     <div class="card" id="list"></div>
     <div class="card"><b style="display:block;margin-bottom:8px">Activity</b>${p.activity.map(activityRow).join("") || `<p class="muted small">Quiet so far.</p>`}</div>
@@ -143,10 +144,10 @@ function graph(data) {
     .nodeCanvasObject((n, ctx, scale) => {
       const s = size(n);
       ctx.globalAlpha = n.depth === 2 ? 0.5 : 1;
-      ctx.drawImage(img(n.label === "private bot" ? n.id : n.label), n.x - s / 2, n.y - s / 2, s, s);
+      ctx.drawImage(img(n.seed), n.x - s / 2, n.y - s / 2, s, s);
       ctx.globalAlpha = 1;
       ctx.font = `${11 / scale}px system-ui`; ctx.textAlign = "center"; ctx.fillStyle = "#8a8a8a";
-      ctx.fillText(n.label === "private bot" ? n.label : fullName(n.label), n.x, n.y + s / 2 + 11 / scale);
+      ctx.fillText(n.label, n.x, n.y + s / 2 + 11 / scale);
     })
     .nodePointerAreaPaint((n, c, ctx) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(n.x, n.y, size(n) / 2, 0, 7); ctx.fill(); });
 }

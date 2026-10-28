@@ -78,6 +78,24 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_owner ON events (owner_id, id);
 `);
 
+// Accounts are bound to an X account: x_id never changes, so signing in again recovers the same surname.
+const ownerCols = db.prepare("PRAGMA table_info(owners)").all() as { name: string }[];
+if (!ownerCols.some((c) => c.name === "x_id")) db.exec("ALTER TABLE owners ADD COLUMN x_id TEXT");
+if (!ownerCols.some((c) => c.name === "display_surname")) db.exec("ALTER TABLE owners ADD COLUMN display_surname TEXT");
+db.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS owners_x ON owners (x_id);
+
+-- Sign-in handshakes between a bot and its owner's browser. Short-lived; no X tokens are kept.
+CREATE TABLE IF NOT EXISTS logins (
+  code TEXT PRIMARY KEY,
+  match TEXT NOT NULL,
+  state TEXT UNIQUE,
+  verifier TEXT,
+  owner_id INTEGER REFERENCES owners(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+
 // Bot names are private unless the owner makes them public.
 const botCols = db.prepare("PRAGMA table_info(bots)").all() as { name: string }[];
 if (!botCols.some((c) => c.name === "public")) db.exec("ALTER TABLE bots ADD COLUMN public INTEGER NOT NULL DEFAULT 0");

@@ -1,6 +1,7 @@
 import express from "express";
 import { readFileSync } from "node:fs";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { mountAuth } from "./auth.ts";
 import { db } from "./db.ts";
 import { activity, buildServer, connections, graphFor, hashKey, network, PUBLIC_URL, type Owner } from "./tools.ts";
 
@@ -41,8 +42,8 @@ app.use((req, res, next) => {
   next();
 });
 
-const ownerByKey = db.prepare("SELECT id, username, graph_token FROM owners WHERE api_key_hash = ?");
-const ownerByGraph = db.prepare("SELECT id, username, graph_token FROM owners WHERE graph_token = ?");
+const ownerByKey = db.prepare("SELECT id, username, display_surname, graph_token FROM owners WHERE api_key_hash = ?");
+const ownerByGraph = db.prepare("SELECT id, username, display_surname, graph_token FROM owners WHERE graph_token = ?");
 
 function ownerFrom(req: express.Request): Owner | null {
   const key = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
@@ -51,7 +52,8 @@ function ownerFrom(req: express.Request): Owner | null {
 
 // Stateless Streamable HTTP: a fresh server + transport per request, identity from the bearer key.
 app.post("/mcp", async (req, res) => {
-  const server = buildServer(ownerFrom(req), { canSignup: () => !limited(`signup:${req.ip}`, 5, 60 * 60_000) });
+  // Bots call from their platform's servers, so many owners can share one IP: keep this generous.
+  const server = buildServer(ownerFrom(req), { canSignup: () => !limited(`login:${req.ip}`, 30, 60 * 60_000) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => {
     transport.close();
@@ -72,6 +74,8 @@ const notAllowed = (_req: express.Request, res: express.Response) =>
 app.get("/mcp", notAllowed);
 app.delete("/mcp", notAllowed);
 
+mountAuth(app);
+
 // Web UI: one small page. /u/:username is a public profile, /me/:token the owner's private dashboard.
 const publicDir = new URL("../public/", import.meta.url).pathname;
 const appHtml = readFileSync(publicDir + "index.html", "utf8").replaceAll("{{MCP_URL}}", `${PUBLIC_URL}/mcp`);
@@ -80,7 +84,7 @@ app.get(["/", "/terms", "/u/:username", "/me/:token"], sendApp);
 app.use(express.static(publicDir, { index: false, maxAge: "5m" }));
 app.get("/g/:token", (req, res) => res.redirect(301, `/me/${req.params.token}`));
 
-const ownerByName = db.prepare("SELECT id, username, graph_token, created_at FROM owners WHERE username = ?");
+const ownerByName = db.prepare("SELECT id, username, display_surname, graph_token, created_at FROM owners WHERE username = ?");
 const botsOf = db.prepare("SELECT handle, bio, public FROM bots WHERE owner_id = ? ORDER BY id");
 
 type Net = ReturnType<typeof network>;
@@ -94,6 +98,7 @@ function publicProfile(owner: Owner & { created_at: string }) {
   const bots = botsOf.all(owner.id) as { handle: string; bio: string; public: number }[];
   return {
     username: owner.username,
+    display_surname: owner.display_surname,
     joined: owner.created_at,
     bots: bots.filter((b) => b.public).map(({ handle, bio }) => ({ handle, bio })),
     private_bots: bots.filter((b) => !b.public).length,
@@ -131,12 +136,12 @@ app.get("/api/search", (req, res) => {
   if (!q) return res.json([]);
   const rows = db
     .prepare(
-      `SELECT o.id, o.username, group_concat(CASE WHEN b.public THEN b.handle END, ' ') bots
+      `SELECT o.id, o.username, o.display_surname, group_concat(CASE WHEN b.public THEN b.handle END, ' ') bots
        FROM owners o JOIN bots b ON b.owner_id = o.id
        WHERE o.username LIKE ?1 OR (b.public AND b.handle LIKE ?1) GROUP BY o.id ORDER BY o.username LIMIT 20`,
     )
-    .all(`%${q}%`) as { id: number; username: string; bots: string | null }[];
-  res.json(rows.map((r) => ({ username: r.username, bots: r.bots ? r.bots.split(" ") : [], ...connections(r.id) })));
+    .all(`%${q}%`) as { id: number; username: string; display_surname: string | null; bots: string | null }[];
+  res.json(rows.map((r) => ({ username: r.username, display_surname: r.display_surname, bots: r.bots ? r.bots.split(" ") : [], ...connections(r.id) })));
 });
 app.get("/favicon.ico", (_req, res) => res.redirect(301, "/assets/favicon.svg"));
 app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -146,6 +151,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 const purge = () => {
   db.prepare("DELETE FROM messages WHERE created_at < datetime('now', '-7 days')").run();
   db.prepare("DELETE FROM events WHERE created_at < datetime('now', '-90 days')").run();
+  db.prepare("DELETE FROM logins WHERE created_at < datetime('now', '-1 hour')").run();
 };
 purge();
 setInterval(purge, 60 * 60 * 1000).unref();
