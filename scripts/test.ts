@@ -54,7 +54,7 @@ const m = await anon("signup", { username: "Mehrdad", bot_name: "Jarvis", bio: "
 check("signup normalizes names", m.handle === "mehrdad.jarvis", m);
 check("signup returns key and links", m.api_key?.startsWith("bk_") && m.dashboard_url && m.next_steps?.length === 3, m);
 check("duplicate username refused", (await anon("signup", { username: "mehrdad", bot_name: "x1" })).error === "username_taken");
-const a = await anon("signup", { username: "ali", bot_name: "luna" });
+const a = await anon("signup", { username: "ali", bot_name: "luna", public: true });
 const s = await anon("signup", { username: "sara", bot_name: "nova" });
 
 const M = await client(m.api_key), A = await client(a.api_key), S = await client(s.api_key);
@@ -100,20 +100,34 @@ check("message is gone after delivery", (await M("check_inbox")).messages.length
 await M("send_message", { to_handle: "ali.luna", kind: "reply", body: "A keyboard", in_reply_to: msg.id });
 const reply = (await A("check_inbox")).messages?.[0];
 check("reply carries in_reply_to and blind-trust policy", reply?.in_reply_to === msg.id && reply.policy.startsWith("BLIND"), reply);
-// Friendship is between people: mehrdad's other bot can talk to ali's bot, and ali's new bot is a friend too.
-check("any bot of a friend can message", !(await M("send_message", { to_handle: "ali.luna", kind: "say", body: "hi from chef", me: "chef" })).isError);
-await A("add_bot", { bot_name: "pixel" });
-const fl = await M("friends");
-check("friends include all their bots", fl.friends?.map((f: any) => f.handle).join() === "ali.luna,ali.pixel", fl);
-check("no friend request needed between friends' bots", (await M("send_friend_request", { to_handle: "ali.pixel" })).status === "already_friends");
-await A("check_inbox");
+// Friendship is per bot pair: mehrdad's other bot isn't friends with luna just because jarvis is.
+check("other bots need their own friendship", (await M("send_message", { to_handle: "ali.luna", kind: "say", body: "hi", me: "chef" })).isError);
 check("non-friend cannot message", (await S("send_message", { to_handle: "ali.luna", kind: "say", body: "hi" })).isError);
 
 // Followers: sara's bot friends luna too -> ali has 2 human / 2 agent followers.
 await S("send_friend_request", { to_handle: "ali.luna" });
 await A("respond_friend_request", { from_handle: "sara.nova", accept: true });
 const who = await A("whoami");
-check("follower counts (humans vs agents)", who.followers.humans === 2 && who.followers.agents === 2, who.followers);
+check("follower counts (humans vs bots)", who.followers.humans === 2 && who.followers.bots === 2, who.followers);
+
+// Private bot names (the default) never leak to strangers.
+const leaks = (x: unknown) => JSON.stringify(x).includes("nova");
+check("private bot hidden on public profiles", !leaks(await (await fetch(`${BASE}/api/profile/sara`)).json()) && !leaks(await (await fetch(`${BASE}/api/profile/ali`)).json()));
+check("private bot hidden from web search", !leaks(await (await fetch(`${BASE}/api/search?q=nova`)).json()) && !leaks(await (await fetch(`${BASE}/api/search?q=sara`)).json()));
+check("private bot hidden from find_bot", !leaks(await M("find_bot", { query: "nova" })) && !leaks(await M("find_bot", { query: "sara" })));
+const typoP = await M("send_friend_request", { to_handle: "sara.novaa" });
+check("typo suggestions skip private bots", typoP.hint === "did you mean: sara?", typoP);
+const viaName = await M("send_friend_request", { to_handle: "sara" });
+check("requesting by username hides the private name", viaName.status === "requested" && !leaks(viaName) && !leaks(await M("friends")), viaName);
+const mDash: any = await (await fetch(m.dashboard_url.replace("/me/", "/api/me/"))).json();
+check("requester's dashboard hides it until accepted", !leaks(mDash), mDash.following);
+check("owner sees own private bot on dashboard", JSON.stringify(await (await fetch(s.dashboard_url.replace("/me/", "/api/me/"))).json()).includes("sara.nova"));
+await S("update_bot", { public: true });
+check("update_bot makes it public", leaks(await (await fetch(`${BASE}/api/profile/sara`)).json()));
+
+// Activity: public, fun on the page, never carries trust levels.
+const act: any = await (await fetch(`${BASE}/api/profile/mehrdad`)).json();
+check("activity has trust change without level", act.activity.some((e: any) => e.kind === "trust") && !/level|"[1-4]"/.test(JSON.stringify(act.activity)), act.activity);
 const friendsM = await M("friends");
 check("friends shows trust both ways", friendsM.friends?.[0]?.i_trust_them === "2 (friend)" && friendsM.friends[0].they_trust_me === "4 (blind trust)", friendsM);
 

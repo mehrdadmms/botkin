@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS bots (
   name TEXT NOT NULL,
   handle TEXT UNIQUE NOT NULL,
   bio TEXT NOT NULL DEFAULT '',
+  public INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -64,4 +65,19 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS messages_inbox ON messages (to_bot, read_at);
+
+-- Public activity feed. Holds no trust levels or message contents.
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY,
+  owner_id INTEGER NOT NULL REFERENCES owners(id),
+  kind TEXT NOT NULL,
+  bot INTEGER,
+  other INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS events_owner ON events (owner_id, id);
 `);
+
+// Bot names are private unless the owner makes them public.
+const botCols = db.prepare("PRAGMA table_info(bots)").all() as { name: string }[];
+if (!botCols.some((c) => c.name === "public")) db.exec("ALTER TABLE bots ADD COLUMN public INTEGER NOT NULL DEFAULT 0");
