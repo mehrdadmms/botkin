@@ -50,22 +50,24 @@ await waitForServer();
 const anon = await client();
 
 check("not signed up gives a clear error", (await anon("whoami")).error === "not_signed_up");
-const m = await anon("signup", { username: "Mehrdad", bot_name: "Jarvis", bio: "ramen expert" });
+const m = await anon("signup", { surname: "Mehrdad", bot_name: "Jarvis", bio: "ramen expert" });
 check("signup normalizes names", m.handle === "mehrdad.jarvis", m);
 check("signup returns key and links", m.api_key?.startsWith("bk_") && m.dashboard_url && m.next_steps?.length === 3, m);
-check("duplicate username refused", (await anon("signup", { username: "mehrdad", bot_name: "x1" })).error === "username_taken");
-const a = await anon("signup", { username: "ali", bot_name: "luna", public: true });
-const s = await anon("signup", { username: "sara", bot_name: "nova" });
+check("duplicate username refused", (await anon("signup", { surname: "mehrdad", bot_name: "x1" })).error === "surname_taken");
+check("surnames are unique regardless of case", (await anon("signup", { surname: "@MEHRDAD", bot_name: "x2" })).error === "surname_taken");
+check("bot gets a full name with username as last name", m.name === "Jarvis Mehrdad", m);
+const a = await anon("signup", { surname: "ali", bot_name: "luna", public: true });
+const s = await anon("signup", { surname: "sara", bot_name: "nova" });
 
 const M = await client(m.api_key), A = await client(a.api_key), S = await client(s.api_key);
-check("whoami works with key", (await M("whoami")).username === "mehrdad");
+check("whoami works with key", (await M("whoami")).surname === "mehrdad");
 check("add_bot", (await M("add_bot", { bot_name: "chef" })).handle === "mehrdad.chef");
 
 // Sloppy handles and level names.
 const r1 = await M("send_friend_request", { to_handle: "@Ali.Luna", level: "close friend", note: "hey!" });
 check("handle with @ and caps resolves", r1.status === "requested" && r1.to === "ali.luna", r1);
 const r2 = await M("send_friend_request", { to_handle: "ali", me: "chef" });
-check("owner username resolves to their bot", r2.to === "ali.luna", r2);
+check("owner surname resolves to their bot", r2.to === "ali.luna", r2);
 check("duplicate request is friendly", (await M("send_friend_request", { to_handle: "ali.luna" })).status === "already_requested");
 const typo = await M("send_friend_request", { to_handle: "ali.lunaa" });
 check("typo gives an error", typo.isError, typo);
@@ -118,7 +120,7 @@ check("private bot hidden from find_bot", !leaks(await M("find_bot", { query: "n
 const typoP = await M("send_friend_request", { to_handle: "sara.novaa" });
 check("typo suggestions skip private bots", typoP.hint === "did you mean: sara?", typoP);
 const viaName = await M("send_friend_request", { to_handle: "sara" });
-check("requesting by username hides the private name", viaName.status === "requested" && !leaks(viaName) && !leaks(await M("friends")), viaName);
+check("requesting by surname hides the private name", viaName.status === "requested" && !leaks(viaName) && !leaks(await M("friends")), viaName);
 const mDash: any = await (await fetch(m.dashboard_url.replace("/me/", "/api/me/"))).json();
 check("requester's dashboard hides it until accepted", !leaks(mDash), mDash.connections);
 check("owner sees own private bot on dashboard", JSON.stringify(await (await fetch(s.dashboard_url.replace("/me/", "/api/me/"))).json()).includes("sara.nova"));

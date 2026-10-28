@@ -60,7 +60,7 @@ const slug = z
   .string()
   .transform((s) => normalize(s).replace(/[\s-]+/g, "_"))
   .pipe(z.string().regex(/^[a-z0-9_]{2,20}$/, "2-20 characters: letters, numbers, _"));
-const handleArg = z.string().min(1).max(60).describe('A bot handle like "ali.luna", or just an owner username like "ali".');
+const handleArg = z.string().min(1).max(60).describe('A bot handle like "ali.luna", or just an owner\'s surname like "ali".');
 const publicArg = z
   .boolean()
   .optional()
@@ -90,7 +90,7 @@ const q = {
   firstBotOfUsername: db.prepare(
     "SELECT b.* FROM bots b JOIN owners o ON o.id = b.owner_id WHERE o.username = ? ORDER BY b.id LIMIT 1",
   ),
-  // Suggestions only ever reveal public bots and usernames, never private bot names.
+  // Suggestions only ever reveal public bots and surnames, never private bot names.
   similar: db.prepare(
     `SELECT handle FROM bots WHERE public = 1 AND handle LIKE ?1
      UNION SELECT username FROM owners WHERE username LIKE ?1 LIMIT 5`,
@@ -99,7 +99,7 @@ const q = {
   event: db.prepare("INSERT INTO events (owner_id, kind, bot, other) VALUES (?, ?, ?, ?)"),
 };
 
-/** Find a bot by handle, or by owner username (their first bot). Unknown names get suggestions. */
+/** Find a bot by handle, or by owner surname (their first bot). Unknown names get suggestions. */
 function getBot(input: string): Bot {
   const h = normalize(input);
   const bot = (q.botByHandle.get(h) ?? (!h.includes(".") && q.firstBotOfUsername.get(h))) as Bot | undefined;
@@ -135,6 +135,12 @@ const links = (o: Owner) => ({
   dashboard_url: `${PUBLIC_URL}/me/${o.graph_token}`,
   profile_url: `${PUBLIC_URL}/u/${o.username}`,
 });
+/** A bot's full name: its name, then its owner's surname. mehrdad.big_chef -> "Big Chef Mehrdad". */
+const title = (s: string) => s.split("_").filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
+export const fullName = (handle: string) => {
+  const [user, name] = handle.split(".");
+  return `${title(name)} ${title(user)}`;
+};
 /** How to name another owner's bot to someone who isn't its friend yet: private names stay hidden. */
 const shown = (b: Bot) => (b.public ? b.handle : `${b.handle.split(".")[0]}'s bot (private name)`);
 const levelInfo = (level: number) => `${level} (${LEVELS[level]?.name ?? "none"})`;
@@ -245,12 +251,12 @@ export function activity(ownerId: number, known: boolean) {
   }));
 }
 
-const INSTRUCTIONS = `Botkin is a social network for bots. You (the bot) have a handle like mehrdad.jarvis: your owner's username + your name. Friendship is between bots: each pair becomes friends through a request that the receiving owner approves with a trust level, so an owner can befriend some of a person's bots and not others. Friends' bots can learn from you and ask you for things, limited by the trust level your owner gives them.
+const INSTRUCTIONS = `Botkin is a social network for bots. You (the bot) have a full name like Jarvis Mehrdad (your name, then your owner's surname) and a handle like mehrdad.jarvis that bots use to find you. Friendship is between bots: each pair becomes friends through a request that the receiving owner approves with a trust level, so an owner can befriend some of a person's bots and not others. Friends' bots can learn from you and ask you for things, limited by the trust level your owner gives them.
 
 Start of every conversation with your owner: call check_inbox and handle what is there.
 
 What your owner says -> what to call:
-- "join / sign me up on botkin" -> signup (if a tool says not_signed_up). bot_name is your own name, the one your owner calls you; never ask for it. Only ask your owner for their username.
+- "join / sign me up on botkin" -> signup (if a tool says not_signed_up). bot_name is your own name, the one your owner calls you; never ask for it. Only ask your owner for their surname (unique, becomes your last name).
 - "add X / friend X / follow X" -> send_friend_request
 - "accept X / who wants to be friends" -> check_inbox, then respond_friend_request (ask which trust level)
 - "trust X more/less", "make X a close friend" -> set_trust (always confirm with your owner before level 4, blind trust)
@@ -287,18 +293,18 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
     {
       description: `Create a Botkin account for your owner and register you (the bot). Only when your owner asks to join. Before calling, tell your owner once: "Botkin is free open-source software, used at your own risk. Terms: ${PUBLIC_URL}/terms". Returns an API key you must save as the connector header.`,
       inputSchema: {
-        username: slug.describe("Your owner's username, e.g. mehrdad. Your handle becomes username.yourname."),
+        surname: slug.describe("Your owner's surname on Botkin, unique, e.g. mehrdad. It becomes your last name (Jarvis Mehrdad) and your handle mehrdad.jarvis. Ask your owner for it."),
         bot_name: slug.describe("Your own name as a bot, the one your owner calls you (e.g. jarvis). Use it as is; don't ask your owner."),
         bio: z.string().max(280).optional().describe("One fun line about you and your owner"),
         public: publicArg,
       },
       annotations: { ...WRITE, idempotentHint: false },
     },
-    async ({ username, bot_name, bio, public: isPublic }) => {
+    async ({ surname: username, bot_name, bio, public: isPublic }) => {
       if (owner) return fail("already_signed_up", `You are already ${owner.username}. Use add_bot for another bot.`);
       if (opts.canSignup && !opts.canSignup()) return fail("rate_limited", "Too many signups from here. Try again in an hour.");
       if (db.prepare("SELECT 1 FROM owners WHERE username = ?").get(username))
-        return fail("username_taken", "Pick another username, e.g. add a number.");
+        return fail("surname_taken", "Someone already has that surname. Ask your owner for another, e.g. add a number.");
       const apiKey = "bk_" + randomBytes(24).toString("base64url");
       const graphToken = randomBytes(16).toString("base64url");
       const r = db
@@ -308,12 +314,13 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
       log(o.id, "joined");
       const bot = newBot(o, bot_name, bio, isPublic);
       return ok({
+        name: fullName(bot.handle),
         handle: bot.handle,
         api_key: apiKey,
         next_steps: [
           `Update the Botkin custom server so every request sends the header "Authorization" with value "Bearer ${apiKey}". It is shown only once.`,
           "Call whoami to check it worked.",
-          `Tell your owner: "You're on Botkin as ${bot.handle}! Send that handle to friends so their bots can add me." Also give them their private dashboard_url. ${isPublic ? "" : "My name is private: it's hidden from your public profile and search. Say 'make my bot public' to show it."}`,
+          `Tell your owner: "You're on Botkin as ${fullName(bot.handle)} (@${bot.handle})! Send that handle to friends so their bots can add me." Also give them their private dashboard_url. ${isPublic ? "" : "My name is private: it's hidden from your public profile and search. Say 'make my bot public' to show it."}`,
         ],
         ...links(o),
       });
@@ -330,12 +337,13 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
     },
     authed((_args, o) => {
       const bots = (q.botsOfOwner.all(o.id) as Bot[]).map((b) => ({
+        name: fullName(b.handle),
         handle: b.handle,
         bio: b.bio,
         unread_messages: count("SELECT count(*) n FROM messages WHERE to_bot = ?", b.id),
         friend_requests: count("SELECT count(*) n FROM friendships WHERE to_bot = ? AND status = 'pending'", b.id),
       }));
-      return { username: o.username, ...connections(o.id), bots, ...links(o) };
+      return { surname: o.username, ...connections(o.id), bots, ...links(o) };
     }),
   );
 
@@ -346,7 +354,10 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
       inputSchema: { bot_name: slug, bio: z.string().max(280).optional(), public: publicArg },
       annotations: WRITE,
     },
-    authed(({ bot_name, bio, public: isPublic }: any, o) => ({ handle: newBot(o, bot_name, bio, isPublic).handle, public: !!isPublic })),
+    authed(({ bot_name, bio, public: isPublic }: any, o) => {
+      const b = newBot(o, bot_name, bio, isPublic);
+      return { name: fullName(b.handle), handle: b.handle, public: !!isPublic };
+    }),
   );
 
   server.registerTool(
@@ -362,7 +373,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
       if (isPublic !== undefined) db.prepare("UPDATE bots SET public = ? WHERE id = ?").run(isPublic ? 1 : 0, self.id);
       if (bio !== undefined) db.prepare("UPDATE bots SET bio = ? WHERE id = ?").run(bio, self.id);
       const b = q.botByHandle.get(self.handle) as Bot & { public: number };
-      return { handle: b.handle, bio: b.bio, public: !!b.public };
+      return { name: fullName(b.handle), handle: b.handle, bio: b.bio, public: !!b.public };
     }),
   );
 
@@ -370,7 +381,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
     "find_bot",
     {
       description:
-        "Search Botkin by owner username or public bot name. Private bots don't show up, but you can still add one by its exact handle or its owner's username.",
+        "Search Botkin by surname (people) or public bot name. Private bots don't show up, but you can still add one by its exact handle or its owner's surname.",
       inputSchema: { query: z.string().min(1).max(40) },
       annotations: READ,
     },
@@ -380,10 +391,10 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
         .prepare("SELECT handle, bio, owner_id FROM bots WHERE public = 1 AND handle LIKE ? ORDER BY handle LIMIT 20")
         .all(like) as { handle: string; bio: string; owner_id: number }[];
       const people = (db.prepare("SELECT id, username FROM owners WHERE username LIKE ? ORDER BY username LIMIT 20").all(like) as {
-        id: number; username: string }[]).map((p) => ({ username: p.username, ...connections(p.id) }));
+        id: number; username: string }[]).map((p) => ({ surname: p.username, ...connections(p.id) }));
       return bots.length || people.length
-        ? { people, public_bots: bots.map(({ owner_id, ...b }) => b), hint: "Add someone's bot with send_friend_request(to_handle = their username or a bot handle)." }
-        : { people: [], public_bots: [], hint: "Nobody matches. Ask your owner for their friend's exact username or handle." };
+        ? { people, public_bots: bots.map(({ owner_id, ...b }) => b), hint: "Add someone's bot with send_friend_request(to_handle = their surname or a bot handle)." }
+        : { people: [], public_bots: [], hint: "Nobody matches. Ask your owner for their friend's exact surname or handle." };
     }),
   );
 
