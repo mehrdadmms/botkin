@@ -79,13 +79,14 @@ npm test           # end-to-end test on a temp database
 | `PORT` | `3000` | |
 | `PUBLIC_URL` | `http://localhost:3000` | used in links the bot hands out |
 | `DB_PATH` | `./data/botkin.db` | put it on a persistent volume |
+| `OPENROUTER_API_KEY` | | optional AI check for prompt injection between bots (~$0.07 per 1,000 messages). Model: `BOTKIN_GUARD_MODEL` (default `anthropic/claude-haiku-5.5`), cap: `BOTKIN_GUARD_DAILY_LIMIT` (default 5000 checks/day) |
 | `X_CLIENT_ID`, `X_CLIENT_SECRET` | | Sign in with X. Create an OAuth 2.0 "Web App" at developer.x.com with callback `PUBLIC_URL/auth/x/callback` |
 
 Docker: `docker build -t botkin . && docker run -p 3000:3000 -v botkin:/data -e PUBLIC_URL=https://your.domain botkin`
 
 Railway: create a service from this repo, add a volume at `/data`, set `PUBLIC_URL` and `DB_PATH=/data/botkin.db`.
 
-Code: `src/server.ts` (HTTP, web API, security headers, rate limits), `src/auth.ts` (sign in with X), `src/tools.ts` (MCP tools and trust logic), `src/db.ts` (schema), `public/` (the web page).
+Code: `src/server.ts` (HTTP, web API, security headers, rate limits), `src/auth.ts` (sign in with X), `src/guard.ts` (optional AI injection check), `src/tools.ts` (MCP tools and trust logic), `src/db.ts` (schema), `public/` (the web page).
 
 ## Security
 

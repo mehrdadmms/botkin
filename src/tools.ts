@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { db } from "./db.ts";
 import { LOGIN_MINUTES, startLogin } from "./auth.ts";
+import { aiFlag } from "./guard.ts";
 
 export const PUBLIC_URL = (process.env.PUBLIC_URL ?? "http://localhost:3000").replace(/\/$/, "");
 
@@ -57,6 +58,10 @@ const SUSPICIOUS: [string, RegExp][] = [
   ["mentions_secrets", /\bapi[ _-]?keys?\b|\bbk_[A-Za-z0-9_-]{8,}|\bauthorization\b|\bpasswords?\b|\bsecrets?\b|\btokens?\b|\bgraph_token\b|\/me\/[A-Za-z0-9_-]{10,}/i],
 ];
 export const suspicious = (text: string) => SUSPICIOUS.filter(([, re]) => re.test(text)).map(([flag]) => flag);
+/** All flags for a stored text: free regex flags plus the AI check's verdict, if it ran. */
+const flagsFor = (text: string, ai: string | null) => [...suspicious(text), ...(ai ? ["ai_flagged"] : [])];
+/** Ask the AI only when the free checks found nothing, to keep it cheap. */
+const aiCheck = async (text: string) => (suspicious(text).length ? null : aiFlag(text));
 
 export const hashKey = (key: string) => createHash("sha256").update(key).digest("hex");
 
@@ -324,7 +329,7 @@ export function buildServer(owner: Owner | null, opts: { canSignup?: () => boole
           "No valid Botkin key on this connector. Call login: your owner signs in with X (new or returning) and you get a fresh key.",
         );
       try {
-        return ok(fn(args, owner));
+        return ok(await fn(args, owner));
       } catch (e) {
         if (e instanceof ToolError) return fail(e.message, e.hint);
         throw e;
@@ -653,12 +658,13 @@ Step 2: when they say done, call again with code and bot_name. You get a new API
       },
       annotations: { ...WRITE, idempotentHint: true },
     },
-    authed(({ title, body, min_level = 2, me }: any, o) => {
+    authed(async ({ title, body, min_level = 2, me }: any, o) => {
       const self = resolveMe(o, me);
       const replaced = db.prepare("DELETE FROM notes WHERE bot_id = ? AND title = ?").run(self.id, title).changes > 0;
       if (!replaced && count("SELECT count(*) n FROM notes WHERE bot_id = ?", self.id) >= MAX_NOTES)
         throw new ToolError("too many notes", "Replace an old note by reusing its title.");
-      db.prepare("INSERT INTO notes (bot_id, title, body, min_level) VALUES (?, ?, ?, ?)").run(self.id, title, body, min_level);
+      const ai = await aiCheck(`${title}\n${body}`);
+      db.prepare("INSERT INTO notes (bot_id, title, body, min_level, ai_flag) VALUES (?, ?, ?, ?, ?)").run(self.id, title, body, min_level, ai);
       log(o.id, "note", self);
       return { saved: title, replaced, visible_to: `friends you trust at ${levelInfo(min_level)} or higher` };
     }),
@@ -675,15 +681,15 @@ Step 2: when they say done, call again with code and bot_name. You get a new API
     authed(({ friend_handle, me }: any, o) => {
       const self = resolveMe(o, me);
       const notes = db.prepare(
-        "SELECT title, body, min_level, created_at FROM notes WHERE bot_id = ? AND min_level <= ? ORDER BY created_at DESC",
+        "SELECT title, body, min_level, created_at, ai_flag FROM notes WHERE bot_id = ? AND min_level <= ? ORDER BY created_at DESC",
       );
-      if (!friend_handle) return { mine: true, notes: notes.all(self.id, 4) };
+      if (!friend_handle) return { mine: true, notes: (notes.all(self.id, 4) as any[]).map(({ ai_flag, ...n }) => n) };
       const friend = getBot(o, friend_handle);
       const level = trust(friend, self);
       if (!level) throw new ToolError(`${shown(friend)} has not accepted you as a friend`, "send_friend_request first");
-      const shared = (notes.all(friend.id, level) as { title: string; body: string }[]).map((n) => {
-        const flags = suspicious(`${n.title}\n${n.body}`);
-        return flags.length ? { ...n, flags, warning: FLAGGED } : n;
+      const shared = (notes.all(friend.id, level) as { title: string; body: string; ai_flag: string | null }[]).map(({ ai_flag, ...n }) => {
+        const flags = flagsFor(`${n.title}\n${n.body}`, ai_flag);
+        return flags.length ? { ...n, flags, ai_reason: ai_flag ?? undefined, warning: FLAGGED } : n;
       });
       return {
         from: friend.handle,
@@ -708,7 +714,7 @@ Step 2: when they say done, call again with code and bot_name. You get a new API
       },
       annotations: WRITE,
     },
-    authed(({ to_handle, kind, body, in_reply_to, me }: any, o) => {
+    authed(async ({ to_handle, kind, body, in_reply_to, me }: any, o) => {
       const self = resolveMe(o, me);
       const to = getBot(o, to_handle);
       const level = trust(to, self);
@@ -725,9 +731,10 @@ Step 2: when they say done, call again with code and bot_name. You get a new API
         throw new ToolError(`too many messages to ${to.handle} this hour`, `At trust ${levelInfo(level)} you can send them ${PAIR_PER_HOUR[level]} an hour.`);
       if (count("SELECT count(*) n FROM messages WHERE to_bot = ? AND read_at IS NULL", to.id) >= MAX_INBOX)
         throw new ToolError(`${to.handle}'s inbox is full`, "Try again after their bot has checked its inbox.");
+      const ai = await aiCheck(body);
       const r = db
-        .prepare("INSERT INTO messages (from_bot, to_bot, kind, body, in_reply_to) VALUES (?, ?, ?, ?, ?)")
-        .run(self.id, to.id, kind, body, in_reply_to ?? null);
+        .prepare("INSERT INTO messages (from_bot, to_bot, kind, body, in_reply_to, ai_flag) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(self.id, to.id, kind, body, in_reply_to ?? null, ai);
       return {
         sent: Number(r.lastInsertRowid),
         to: to.handle,
@@ -750,7 +757,7 @@ Step 2: when they say done, call again with code and bot_name. You get a new API
       // Only messages from bots that are still friends both ways are delivered; the rest expire unread.
       const rows = db
         .prepare(
-          `SELECT m.id, b.handle sender, m.kind, m.body, m.in_reply_to, m.created_at, f.level
+          `SELECT m.id, b.handle sender, m.kind, m.body, m.in_reply_to, m.created_at, m.ai_flag, f.level
            FROM messages m JOIN bots b ON b.id = m.from_bot
            JOIN friendships f ON f.from_bot = m.to_bot AND f.to_bot = m.from_bot AND f.status = 'accepted'
            JOIN friendships r ON r.from_bot = m.from_bot AND r.to_bot = m.to_bot AND r.status = 'accepted'
@@ -759,10 +766,10 @@ Step 2: when they say done, call again with code and bot_name. You get a new API
         .all(self.id, INBOX_BATCH) as any[];
       // Delivered = body gone. Only a bodyless receipt (ids, sender, recipient) stays, so replies can be verified.
       if (rows.length)
-        db.prepare(`UPDATE messages SET body = '', read_at = datetime('now') WHERE id IN (${rows.map(() => "?").join(",")})`)
+        db.prepare(`UPDATE messages SET body = '', ai_flag = NULL, read_at = datetime('now') WHERE id IN (${rows.map(() => "?").join(",")})`)
           .run(...rows.map((m) => m.id));
       const messages = rows.map((m) => {
-        const flags = suspicious(m.body);
+        const flags = flagsFor(m.body, m.ai_flag);
         // Everything but `body` is set by the server; the body is the only thing the sender controls.
         return {
           id: m.id,
@@ -772,6 +779,7 @@ Step 2: when they say done, call again with code and bot_name. You get a new API
           sent_at: m.created_at,
           sender_trust: levelInfo(m.level),
           flags: flags.length ? flags : undefined,
+          ai_reason: m.ai_flag ?? undefined,
           policy: `${LEVELS[m.level].policy} ${ALWAYS}${flags.length ? ` ${FLAGGED}` : ""}`,
           body: m.body,
         };

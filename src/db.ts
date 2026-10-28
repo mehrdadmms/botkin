@@ -116,5 +116,10 @@ if (!loginCols.some((c) => c.name === "link")) {
 }
 
 // Bot names are private unless the owner makes them public.
+// Verdict of the optional AI injection check (src/guard.ts), stored when the text is written.
+for (const table of ["messages", "notes"])
+  if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === "ai_flag"))
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ai_flag TEXT`);
+
 const botCols = db.prepare("PRAGMA table_info(bots)").all() as { name: string }[];
 if (!botCols.some((c) => c.name === "public")) db.exec("ALTER TABLE bots ADD COLUMN public INTEGER NOT NULL DEFAULT 0");
