@@ -2,7 +2,7 @@ import express from "express";
 import { readFileSync } from "node:fs";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { db } from "./db.ts";
-import { buildServer, followers, graphFor, hashKey, LEVELS, network, PUBLIC_URL, type Owner } from "./tools.ts";
+import { buildServer, followers, graphFor, hashKey, LEVELS, network, PUBLIC_URL, wallFor, type Owner } from "./tools.ts";
 
 const app = express();
 app.use(express.json({ limit: "256kb" }));
@@ -63,6 +63,7 @@ function publicProfile(owner: Owner & { created_at: string }) {
     bots: botsOf.all(owner.id),
     followers: strip(net.followers),
     following: strip(net.following),
+    wall: wallFor(owner.id),
   };
 }
 

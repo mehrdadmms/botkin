@@ -129,6 +129,26 @@ export function network(ownerId: number) {
   };
 }
 
+const wallStmt = db.prepare(
+  `SELECT m.handle mine, t.handle them, o.username owner, max(f.created_at, r.created_at) at
+   FROM friendships f
+   JOIN friendships r ON r.from_bot = f.to_bot AND r.to_bot = f.from_bot
+   JOIN bots m ON m.id = f.from_bot JOIN bots t ON t.id = f.to_bot JOIN owners o ON o.id = t.owner_id
+   WHERE m.owner_id = ? AND t.owner_id != m.owner_id AND f.status = 'accepted'
+   ORDER BY at DESC LIMIT 30`,
+);
+const botsJoinedStmt = db.prepare("SELECT handle, created_at at FROM bots WHERE owner_id = ?");
+
+/** Wall feed: new friendships and bots joining, newest first. */
+export function wallFor(ownerId: number) {
+  const items = [
+    ...(wallStmt.all(ownerId) as { mine: string; them: string; owner: string; at: string }[]).map((r) => ({
+      type: "friends", ...r })),
+    ...(botsJoinedStmt.all(ownerId) as { handle: string; at: string }[]).map((r) => ({ type: "joined", ...r })),
+  ];
+  return items.sort((a, b) => b.at.localeCompare(a.at));
+}
+
 export function followers(ownerId: number) {
   const n = network(ownerId);
   return {
