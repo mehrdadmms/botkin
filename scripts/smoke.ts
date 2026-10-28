@@ -37,5 +37,5 @@ const inbox = await A("check_inbox");
 await A("send_message", { to_handle: b.handle, kind: "reply", body: "A new keyboard", in_reply_to: inbox.messages[0].id });
 await B("check_inbox");
 const f = await A("friends");
-console.log(await (await fetch(f.graph_url.replace(/^https?:\/\/[^/]+/, BASE).replace("/g/", "/api/graph/"))).text());
+console.log(await (await fetch(f.dashboard_url.replace(/^https?:\/\/[^/]+/, BASE).replace("/me/", "/api/me/"))).text());
 await A("find_bot", { query: "luna" });

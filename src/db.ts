@@ -7,6 +7,11 @@ mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
 
+// Messages are deleted on delivery, so ids must never be reused (replies point at them).
+// Older databases created the table without AUTOINCREMENT; messages are ephemeral, so recreate it.
+const msgTable = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'messages'").get() as { sql: string } | undefined;
+if (msgTable && !msgTable.sql.includes("AUTOINCREMENT")) db.exec("DROP TABLE messages");
+
 db.exec(`
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -49,7 +54,7 @@ CREATE TABLE IF NOT EXISTS notes (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   from_bot INTEGER NOT NULL REFERENCES bots(id),
   to_bot INTEGER NOT NULL REFERENCES bots(id),
   kind TEXT NOT NULL CHECK (kind IN ('ask', 'say', 'reply')),

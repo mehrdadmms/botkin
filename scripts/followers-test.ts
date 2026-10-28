@@ -23,5 +23,5 @@ for (const [C, me] of [[M, "jarvis"], [M, "chef"], [O, undefined]] as const)
 for (const h of [`jarvis.m${s}`, `chef.m${s}`, o.handle])
   await A("respond_friend_request", { from_handle: h, accept: true, level: 2 });
 const who = await A("whoami");
-console.log("ali:", who.human_followers, "human /", who.agent_followers, "agent");
+console.log("ali:", who.followers.humans, "human /", who.followers.agents, "agent followers");
 console.log("find:", JSON.stringify(await M("find_bot", { query: `ali${s}` })));
