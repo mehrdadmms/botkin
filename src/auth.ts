@@ -12,6 +12,8 @@ const X_CLIENT_ID = process.env.X_CLIENT_ID ?? "";
 const X_CLIENT_SECRET = process.env.X_CLIENT_SECRET ?? "";
 // Test/dev only: lets a fake X account sign in. Never set this in production.
 const DEV_LOGIN = process.env.BOTKIN_DEV_LOGIN === "1";
+if (DEV_LOGIN && process.env.NODE_ENV === "production")
+  throw new Error("BOTKIN_DEV_LOGIN lets anyone sign in as anyone; refusing to start in production");
 const CALLBACK = `${PUBLIC_URL}/auth/x/callback`;
 export const LOGIN_MINUTES = 15;
 
@@ -24,14 +26,17 @@ main{max-width:420px;padding:24px 16px;text-align:center}.code{font:600 32px ui-
 .btn{display:inline-block;background:#fff;color:#000;border-radius:999px;padding:10px 20px;text-decoration:none;font-weight:600}
 p{color:#a0a0a0}</style></head><body><main><h1 style="font-size:22px">${esc(title)}</h1>${body}</main></body></html>`);
 
-const liveLogin = db.prepare(`SELECT * FROM logins WHERE code = ? AND created_at > datetime('now', '-${LOGIN_MINUTES} minutes')`);
+const liveLogin = db.prepare(`SELECT * FROM logins WHERE link = ? AND created_at > datetime('now', '-${LOGIN_MINUTES} minutes')`);
 const MATCH_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I
 
+/** Two secrets: `code` stays with the bot and redeems the key; `link` goes in the URL the owner opens,
+ *  so someone who sees the URL (history, a screenshot) can't take the key. */
 export function startLogin() {
   const code = randomBytes(16).toString("base64url");
+  const link = randomBytes(12).toString("base64url");
   const match = Array.from(randomBytes(4), (b) => MATCH_CHARS[b % MATCH_CHARS.length]).join("");
-  db.prepare("INSERT INTO logins (code, match) VALUES (?, ?)").run(code, match);
-  return { code, match, url: `${PUBLIC_URL}/login/${code}` };
+  db.prepare("INSERT INTO logins (code, link, match) VALUES (?, ?, ?)").run(code, link, match);
+  return { code, match, url: `${PUBLIC_URL}/login/${link}` };
 }
 
 /** Find or create the owner for an X account. A new owner's surname is their X username. */
@@ -50,9 +55,9 @@ function ownerForX(xId: string, xUsername: string): number {
   return ownerId;
 }
 
-function finish(res: express.Response, code: string, xId: string, xUsername: string) {
+function finish(res: express.Response, link: string, xId: string, xUsername: string) {
   const ownerId = ownerForX(xId, xUsername);
-  db.prepare("UPDATE logins SET owner_id = ?, state = NULL, verifier = NULL WHERE code = ?").run(ownerId, code);
+  db.prepare("UPDATE logins SET owner_id = ?, state = NULL, verifier = NULL WHERE link = ?").run(ownerId, link);
   const { username } = db.prepare("SELECT username FROM owners WHERE id = ?").get(ownerId) as { username: string };
   return page(res, 200, "You're in", `<p>Signed in as <b>@${esc(xUsername)}</b>. Your Botkin surname is <b>${esc(username)}</b>.</p>
     <p>Go back to your Grok Bot and say <b>done</b>.</p>`);
@@ -60,12 +65,12 @@ function finish(res: express.Response, code: string, xId: string, xUsername: str
 
 export function mountAuth(app: express.Express) {
   // Step 1: the owner opens the link from their bot and checks the match code before going to X.
-  app.get("/login/:code", (req, res) => {
-    const login = liveLogin.get(req.params.code) as { match: string; owner_id: number | null } | undefined;
+  app.get("/login/:link", (req, res) => {
+    const login = liveLogin.get(req.params.link) as { match: string; owner_id: number | null } | undefined;
     if (!login) return page(res, 404, "Link expired", "<p>Ask your bot to start the Botkin login again.</p>");
     if (login.owner_id) return page(res, 200, "Already signed in", "<p>Go back to your Grok Bot and say <b>done</b>.</p>");
     const go = X_CLIENT_ID
-      ? `<a class="btn" href="/login/${esc(req.params.code)}/x">Continue with X</a>`
+      ? `<a class="btn" href="/login/${esc(req.params.link)}/x">Continue with X</a>`
       : DEV_LOGIN
         ? `<p>Dev login: open /login/&lt;code&gt;/dev?u=name&amp;id=123</p>`
         : "<p>Sign in with X isn't set up on this server yet.</p>";
@@ -75,12 +80,12 @@ export function mountAuth(app: express.Express) {
   });
 
   // Step 2: send the owner to X with PKCE.
-  app.get("/login/:code/x", (req, res) => {
-    const login = liveLogin.get(req.params.code) as { owner_id: number | null } | undefined;
+  app.get("/login/:link/x", (req, res) => {
+    const login = liveLogin.get(req.params.link) as { owner_id: number | null } | undefined;
     if (!login || login.owner_id || !X_CLIENT_ID) return page(res, 404, "Link expired", "<p>Ask your bot to start again.</p>");
     const state = randomBytes(16).toString("base64url");
     const verifier = randomBytes(32).toString("base64url");
-    db.prepare("UPDATE logins SET state = ?, verifier = ? WHERE code = ?").run(state, verifier, req.params.code);
+    db.prepare("UPDATE logins SET state = ?, verifier = ? WHERE link = ?").run(state, verifier, req.params.link);
     const url = new URL("https://x.com/i/oauth2/authorize");
     url.search = new URLSearchParams({
       response_type: "code",
@@ -99,7 +104,7 @@ export function mountAuth(app: express.Express) {
     const state = String(req.query.state ?? "");
     const login = state
       ? (db.prepare(`SELECT * FROM logins WHERE state = ? AND created_at > datetime('now', '-${LOGIN_MINUTES} minutes')`)
-          .get(state) as { code: string; verifier: string } | undefined)
+          .get(state) as { link: string; verifier: string } | undefined)
       : undefined;
     if (!login || !req.query.code) return page(res, 400, "Sign-in cancelled", "<p>Ask your bot to start the Botkin login again.</p>");
     try {
@@ -119,7 +124,7 @@ export function mountAuth(app: express.Express) {
       const me = await fetch("https://api.x.com/2/users/me", {
         headers: { Authorization: `Bearer ${token.access_token}` },
       }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`users/me ${r.status}`))));
-      return finish(res, login.code, String(me.data.id), String(me.data.username));
+      return finish(res, login.link, String(me.data.id), String(me.data.username));
     } catch (e) {
       console.error("x login failed:", (e as Error).message);
       return page(res, 502, "X sign-in failed", "<p>Something went wrong talking to X. Ask your bot to try again.</p>");
@@ -127,9 +132,9 @@ export function mountAuth(app: express.Express) {
   });
 
   if (DEV_LOGIN)
-    app.get("/login/:code/dev", (req, res) => {
-      const login = liveLogin.get(req.params.code) as { owner_id: number | null } | undefined;
+    app.get("/login/:link/dev", (req, res) => {
+      const login = liveLogin.get(req.params.link) as { owner_id: number | null } | undefined;
       if (!login || login.owner_id) return page(res, 404, "Link expired", "");
-      return finish(res, req.params.code, `dev:${req.query.id}`, String(req.query.u ?? "dev"));
+      return finish(res, req.params.link, `dev:${req.query.id}`, String(req.query.u ?? "dev"));
     });
 }

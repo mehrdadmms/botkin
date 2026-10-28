@@ -7,7 +7,7 @@ mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
 
-// Messages are deleted on delivery, so ids must never be reused (replies point at them).
+// Message bodies are erased on delivery and rows purged after 7 days, so ids must never be reused (replies point at them).
 // Older databases created the table without AUTOINCREMENT; messages are ephemeral, so recreate it.
 const msgTable = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'messages'").get() as { sql: string } | undefined;
 if (msgTable && !msgTable.sql.includes("AUTOINCREMENT")) db.exec("DROP TABLE messages");
@@ -86,15 +86,34 @@ db.exec(`
 CREATE UNIQUE INDEX IF NOT EXISTS owners_x ON owners (x_id);
 
 -- Sign-in handshakes between a bot and its owner's browser. Short-lived; no X tokens are kept.
+-- code is the bot's secret (redeems the key); link is what goes in the URL the owner opens.
 CREATE TABLE IF NOT EXISTS logins (
   code TEXT PRIMARY KEY,
+  link TEXT UNIQUE NOT NULL,
   match TEXT NOT NULL,
   state TEXT UNIQUE,
   verifier TEXT,
   owner_id INTEGER REFERENCES owners(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- An owner blocks a bot: none of the owner's bots accept its friend requests. Befriending it again unblocks.
+CREATE TABLE IF NOT EXISTS blocks (
+  owner_id INTEGER NOT NULL REFERENCES owners(id),
+  bot_id INTEGER NOT NULL REFERENCES bots(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (owner_id, bot_id)
+);
 `);
+
+// Older databases had logins without the link/code split; the rows live 15 minutes, so just recreate.
+const loginCols = db.prepare("PRAGMA table_info(logins)").all() as { name: string }[];
+if (!loginCols.some((c) => c.name === "link")) {
+  db.exec("DROP TABLE logins");
+  db.exec(`CREATE TABLE logins (
+    code TEXT PRIMARY KEY, link TEXT UNIQUE NOT NULL, match TEXT NOT NULL, state TEXT UNIQUE, verifier TEXT,
+    owner_id INTEGER REFERENCES owners(id), created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+}
 
 // Bot names are private unless the owner makes them public.
 const botCols = db.prepare("PRAGMA table_info(bots)").all() as { name: string }[];

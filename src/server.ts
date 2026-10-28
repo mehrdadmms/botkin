@@ -13,7 +13,8 @@ app.use(express.json({ limit: "64kb" }));
 app.use((_req, res, next) => {
   res.set({
     "Content-Security-Policy":
-      "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/force-graph@1.51.5/dist/force-graph.min.js; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     "Referrer-Policy": "no-referrer", // dashboard URLs carry a secret token
     "X-Content-Type-Options": "nosniff",
     "Strict-Transport-Security": "max-age=31536000",
@@ -37,8 +38,9 @@ setInterval(() => {
   for (const [k, h] of hits) if (h.reset < now) hits.delete(k);
 }, 60_000).unref();
 
+// Bots call from their platform's shared IPs, so the per-IP limit is loose; the real limit is per account below.
 app.use((req, res, next) => {
-  if (limited(`all:${req.ip}`, 300, 60_000)) return res.status(429).json({ error: "rate_limited", hint: "slow down" });
+  if (limited(`all:${req.ip}`, 1200, 60_000)) return res.status(429).json({ error: "rate_limited", hint: "slow down" });
   next();
 });
 
@@ -52,8 +54,10 @@ function ownerFrom(req: express.Request): Owner | null {
 
 // Stateless Streamable HTTP: a fresh server + transport per request, identity from the bearer key.
 app.post("/mcp", async (req, res) => {
-  // Bots call from their platform's servers, so many owners can share one IP: keep this generous.
-  const server = buildServer(ownerFrom(req), { canSignup: () => !limited(`login:${req.ip}`, 30, 60 * 60_000) });
+  const owner = ownerFrom(req);
+  if (owner && limited(`owner:${owner.id}`, 240, 60_000))
+    return res.status(429).json({ jsonrpc: "2.0", error: { code: -32000, message: "rate_limited: this account is calling too fast, wait a minute" }, id: null });
+  const server = buildServer(owner, { canSignup: () => !limited(`login:${req.ip}`, 30, 60 * 60_000) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => {
     transport.close();
@@ -146,7 +150,7 @@ app.get("/api/search", (req, res) => {
 app.get("/favicon.ico", (_req, res) => res.redirect(301, "/assets/favicon.svg"));
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-// Undelivered messages expire after 7 days; delivered ones are deleted in check_inbox.
+// Messages expire after 7 days (delivered ones already lost their body in check_inbox and are only kept as receipts).
 // Activity older than 90 days is dropped.
 const purge = () => {
   db.prepare("DELETE FROM messages WHERE created_at < datetime('now', '-7 days')").run();
